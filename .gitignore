@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# generated data / figures
+outputs/
+figures/
+figs/
+io_preview/
+.tmp_*/
+*.npz
+*.npy
+*.csv
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
