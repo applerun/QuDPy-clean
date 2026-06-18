@@ -1,0 +1,19 @@
+{
+  "note": "中文文档草稿；未修改 GitHub 仓库文件。",
+  "files": [
+    "README.md",
+    "docs/document_summary.md",
+    "docs/deprecated_boundaries_zh.md",
+    "docs/detailed API/field_zh.md",
+    "docs/detailed API/parameters_zh.md",
+    "docs/detailed API/normalizer_zh.md",
+    "docs/detailed API/solver_result_zh.md",
+    "docs/detailed API/spectroscopy_zh.md",
+    "docs/detailed API/io_metadata_zh.md",
+    "docs/detailed API/workflow_examples_zh.md"
+  ],
+  "replacement_suggestion": {
+    "docs/document_updated.md": "建议由 docs/document_summary.md 覆盖/替代",
+    "docs/document_update_summary.md": "建议合并进 docs/document_summary.md 后归档或删除"
+  }
+}
