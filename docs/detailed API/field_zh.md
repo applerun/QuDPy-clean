@@ -1,191 +1,377 @@
 # Field 物理电场接口说明
 
-`FieldPhyRoot` 是 QuDPy 用户侧 physical field 的基类。它描述真实 lab-frame
-电场，时间单位固定为 `fs`，电场单位固定为 `MV/cm`。当前正式入口是：
+本文档说明当前 `qudpy_sjh.utils.fields` 的 physical field API。field 层负责描述用户侧 lab-frame electric field，是 normalizer 和 solver 的物理输入边界。
 
-```python
-field = make_default_gaussian_carrier_field(
-    E0_MV_per_cm=0.1,
-    laser_energy_eV=1.625,
-    pulse_center_fs=0.0,
-    pulse_sigma_fs=5.0,
-)
-
-params = NLevelPhysicalParams(
-    energies_eV=...,
-    dipole_matrix_D=...,
-    t_start_fs=...,
-    t_end_fs=...,
-    dt_fs=...,
-    field=field,
-)
-```
-
-`NLevelPhysicalParams` 不再保存 `field_MV_per_cm`、`laser_energy_eV`、
-`pulse_center_fs` 或 `pulse_sigma_fs` 这类顶层光场标量。field metadata 由
-field 对象自身导出。
-
-## FieldPhyRoot 的要求
-
-自定义 field 至少需要实现：
-
-```python
-def physical_E_MV_per_cm(self, t_fs: np.ndarray) -> np.ndarray:
-    ...
-```
-
-要求：
-
-- 输入 `t_fs` 是 numpy array，单位 `fs`。
-- 返回值必须和 `t_fs` shape 相同。
-- 返回值是真实 lab-frame 电场，单位 `MV/cm`。
-- 不要返回 code-unit field。
-- 不要在 field 中构造 Hamiltonian、Lindblad channel 或 density matrix 后处理。
-
-`FieldPhyRoot.__call__(t_fs)` 会调用 `physical_E_MV_per_cm(t_fs)`，并检查 shape。
-
-## reference_MV_per_cm
-
-`reference_MV_per_cm` 是 field 提供给 core 的正式数值接口，单位 `MV/cm`。
-它不是 metadata，也不应从 `to_dict()` 中猜测。
-
-`ParaNormalizer` 使用同一个 reference 做两件事：
+## 当前结构
 
 ```text
-coupling_matrix_fs_inv = mu_D * reference_MV_per_cm * constant
-E_code(t) = E_phys(t) / reference_MV_per_cm
+qudpy_sjh/utils/fields/
+  __init__.py
+  lab_fields.py
+  field_series.py
+  specific/
+    __init__.py
+    basic_fields.py
+    ta_fields.py
+    twodes_fields.py
 ```
 
-这两处必须使用同一个 reference。否则 Hamiltonian 中的 `mu * E(t)` 会被重复缩放
-或漏缩放。
+职责边界：
 
-默认 `FieldPhyRoot.reference_MV_per_cm` 返回 `None`。能进入 solver 主线的自定义
-field 必须覆盖该 property 并返回非零值。
+- `lab_fields.py`：基础 lab-frame field 抽象和 wrapper；
+- `field_series.py`：多个 physical field 的线性叠加与 scan helper；
+- `specific/basic_fields.py`：基础载波场和高斯载波场；
+- `specific/ta_fields.py`：TA / pump-probe field helper；
+- `specific/twodes_fields.py`：2DES field helper；
+- `fields/__init__.py`：用户侧 public API re-export。
 
-内置 field 约定：
+## 单位约定
 
-- `CarrierFieldPhysical.reference_MV_per_cm = E0_MV_per_cm`
-- `GaussianCarrierFieldPhysical.reference_MV_per_cm = E0_MV_per_cm`
-- `FieldPhySeries.reference_MV_per_cm = sum(abs(subfield.reference_MV_per_cm))`
+用户侧 field 使用真实物理单位：
 
-若 `FieldPhySeries` 中任一 subfield 没有 reference，则整个 series 的 reference
-为 `None`，normalizer 会 fail-fast。
+```text
+time: fs
+electric field: MV/cm
+laser energy: eV
+angular frequency: fs^-1
+phase: rad
+```
 
-## normalization_rate_candidates_fs_inv
-
-`normalization_rate_candidates_fs_inv` 是 field 给 `ParaNormalizer` 的 auto-scale
-建议，单位 `fs^-1`。它只帮助选择 code-unit 时间尺度，不改变物理模型。
-
-该 property 可以返回多个 candidates，例如：
-
-- Gaussian envelope bandwidth：`1 / sigma_fs`
-- envelope modulation angular frequency
-- pulse repetition rate
-- 其它会影响 `E(t)` 数值变化速度的 field-specific 时间尺度
-
-默认实现返回空 tuple：
+所有 field 应满足：
 
 ```python
-()
+E = field(t_fs)
 ```
 
-`ParaNormalizer` 只读取这个通用 property，不会根据 Gaussian、CW、TAField、
-TwoDESField 或 FieldPhySeries 等具体类型分支。
+其中 `E` 的单位是 `MV/cm`。
 
-## 内置 Field
+## FieldPhyRoot
+
+`FieldPhyRoot` 是 lab-frame physical electric field 的基类。
+
+核心接口：
+
+```python
+physical_E_MV_per_cm(t_fs)
+reference_MV_per_cm
+normalization_rate_candidates_fs_inv
+to_dict()
+time_shifted(shift_fs)
+```
+
+含义：
+
+- `physical_E_MV_per_cm(t_fs)` 返回真实 lab-frame 电场，单位 `MV/cm`；
+- `reference_MV_per_cm` 是 normalizer 用于构造 code-unit field 的参考电场；
+- `normalization_rate_candidates_fs_inv` 为 auto-scale 提供候选速率；
+- `to_dict()` 用于 metadata / debug / rebuild；
+- `time_shifted(shift_fs)` 返回非原地修改的时间平移 wrapper。
+
+`to_dict()` 不是 core 数值接口。normalizer 不应从 `field.to_dict()` 读取核心缩放参数。
+
+## FieldPhyCustomed
+
+`FieldPhyCustomed` 是用户自定义 physical field 的推荐基类。
+
+自定义 field 至少应实现：
+
+```python
+physical_E_MV_per_cm(t_fs)
+__repr__()
+reference_MV_per_cm
+```
+
+如果自定义场包含已知快速时间尺度，建议同时提供：
+
+```python
+normalization_rate_candidates_fs_inv
+```
+
+否则 normalizer 的 auto-scale 只会根据系统能量、coupling 和 dissipative rates 选择时间尺度。
+
+## 基础场
 
 ### CarrierFieldPhysical
 
-CW lab-frame carrier：
+`CarrierFieldPhysical` 表示 lab-frame continuous carrier field：
 
 ```text
 E(t_fs) = 2 E0 cos(omega_L t_fs + phase)
 ```
 
-`E0_MV_per_cm` 是表达式中的 `E0`，不是峰峰值。`phase_rad` 是 carrier /
-optical phase。
+主要字段：
+
+```text
+E0_MV_per_cm
+omega_L_fs_inv
+phase_rad
+name
+metadata
+```
+
+推荐 helper：
+
+```python
+make_default_carrier_field(
+    E0_MV_per_cm=...,
+    laser_energy_eV=...,
+    phase_rad=0.0,
+)
+```
+
+该 helper 根据 `laser_energy_eV` 生成 `omega_L_fs_inv`。
 
 ### GaussianCarrierFieldPhysical
 
-Gaussian envelope lab-frame carrier：
+`GaussianCarrierFieldPhysical` 表示高斯包络载波场：
 
 ```text
-E(t_fs) = 2 E0 exp[-(t_fs-center)^2/(2 sigma^2)] cos(omega_L t_fs + phase)
+E(t_fs)
+=
+2 E0 exp[-(t_fs - center_fs)^2 / (2 sigma_fs^2)]
+cos(omega_L t_fs + phase)
 ```
 
-`phase_rad` 仍然是 carrier / optical phase。当前类不定义独立 envelope phase。
-如果后续需要 complex envelope，应新增专门 field class，而不是把特化语义塞进
-real lab-frame Gaussian field。
+主要字段：
 
-## FieldPhySeries、TAField 和 TwoDESField
+```text
+E0_MV_per_cm
+omega_L_fs_inv
+center_fs
+sigma_fs
+phase_rad
+name
+metadata
+```
 
-多脉冲组合只在 physical field 层完成：
+推荐 helper：
 
 ```python
-field = FieldPhySeries(fields=(pump, probe))
-field = make_ta_gaussian_field(...)
-field = make_twodes_gaussian_field(...)
+make_default_gaussian_carrier_field(
+    E0_MV_per_cm=...,
+    laser_energy_eV=...,
+    pulse_center_fs=...,
+    pulse_sigma_fs=...,
+    phase_rad=0.0,
+)
 ```
 
-`FieldPhySeries` 本身仍然是 `FieldPhyRoot`，可直接传入
-`NLevelPhysicalParams(..., field=field)`。solver/model 层只看到一个 code-unit
-callable，不知道也不处理 subfields。
+## TimeShiftedField
 
-`TAField` 表示 pump-probe / transient absorption 常用的 physical multi-pulse
-field。`TwoDESField` 表示 2DES 常用的 three-pulse physical field。它们的 delay
-和相位语义属于 field / workflow 层，不属于 solver core。
+`TimeShiftedField` 是 non-mutating time-shift wrapper。
 
-## 自定义 Field 指南
-
-最小自定义 field 示例：
+推荐调用：
 
 ```python
-class MyField(FieldPhyCustomed):
-    def __init__(self, amplitude_MV_per_cm, modulation_fs_inv):
-        self.amplitude_MV_per_cm = amplitude_MV_per_cm
-        self.modulation_fs_inv = modulation_fs_inv
-
-    @property
-    def reference_MV_per_cm(self):
-        return abs(self.amplitude_MV_per_cm)
-
-    @property
-    def normalization_rate_candidates_fs_inv(self):
-        return (abs(self.modulation_fs_inv),)
-
-    def physical_E_MV_per_cm(self, t_fs):
-        return self.amplitude_MV_per_cm * np.sin(self.modulation_fs_inv * t_fs)
-
-    def __repr__(self):
-        return (
-            "MyField("
-            f"amplitude_MV_per_cm={self.amplitude_MV_per_cm!r}, "
-            f"modulation_fs_inv={self.modulation_fs_inv!r})"
-        )
+shifted = field.time_shifted(shift_fs)
 ```
 
-什么时候需要覆盖 `reference_MV_per_cm`：
+约定：
 
-- field 要进入 `run_case()` 主线；
-- field 有明确的非零参考幅度；
-- field 是多个子场的组合，需要定义整体归一化参考幅度。
+```text
+shift_fs > 0 表示场整体向更晚时间移动
+E_shifted(t) = E_original(t - shift_fs)
+```
 
-什么时候需要覆盖 `normalization_rate_candidates_fs_inv`：
+例子：
 
-- field 包含 pulse width、delay modulation、重复频率或其它快时间尺度；
-- 默认 coupling / relaxation / dephasing candidates 不足以代表 field 的变化速度。
+```python
+pulse_0 = make_default_gaussian_carrier_field(
+    E0_MV_per_cm=0.05,
+    laser_energy_eV=1.5,
+    pulse_center_fs=0.0,
+    pulse_sigma_fs=10.0,
+)
 
-`to_dict()` 只用于 metadata、debug metadata 和可选 rebuild 信息。它可以包含
-`omega_L_fs_inv`、`laser_energy_eV`、`pulse_center_fs` 等 field-specific metadata，
-但 core 数值接口应来自 property，而不是来自 `to_dict()`。
+pulse_50 = pulse_0.time_shifted(50.0)
+```
 
-## 设计边界
+此时 `pulse_50` 的中心移动到 `50 fs`。
 
-Field 只负责描述外加物理电场。它不负责：
+连续平移会合并：
 
-- Hamiltonian 构造；
-- Lindblad channel 构造；
-- density matrix 后处理；
-- spectroscopy pathway 管理；
-- absorption / 2DES 数据分析；
-- plotting style。
+```python
+field.time_shifted(20.0).time_shifted(30.0)
+```
+
+等价于：
+
+```python
+field.time_shifted(50.0)
+```
+
+## FieldPhySeries
+
+`FieldPhySeries` 表示多个 physical field 的线性叠加：
+
+```text
+E_total(t_fs) = sum_k E_k(t_fs)
+```
+
+示例：
+
+```python
+from qudpy_sjh.utils.fields import FieldPhySeries
+
+field = FieldPhySeries(
+    fields=(pump, probe),
+    sub_field_names=("pump", "probe"),
+)
+
+E_total = field(t_fs)
+E_probe = field["probe"](t_fs)
+```
+
+`FieldPhySeries` 本身仍是 `FieldPhyRoot`，可直接传入：
+
+```python
+NLevelPhysicalParams(..., field=field)
+```
+
+solver 不需要知道内部有几个 subfield。多场叠加只发生在 physical field 层。
+
+## TA / pump-probe helper
+
+主要对象：
+
+```text
+TAField
+```
+
+主要 helper：
+
+```text
+make_ta_gaussian_field
+make_pump_probe_field_from_templates
+make_ta_field_from_templates
+iter_ta_gaussian_fields
+```
+
+### TAField
+
+`TAField` 是 `FieldPhySeries` 的子类，用于 pump-probe / transient absorption 场。它通常包含：
+
+```text
+sub_field_names = ("pump", "probe")
+```
+
+可通过：
+
+```python
+pump = field["pump"]
+probe = field["probe"]
+```
+
+提取子场。
+
+### make_ta_gaussian_field
+
+`make_ta_gaussian_field(...)` 用于直接构造 Gaussian pump 和 Gaussian probe。
+
+当前语义是：
+
+```text
+probe_center_fs = pump_center_fs + probe_delay_fs
+```
+
+因此它默认固定 pump center，然后根据 delay 移动 probe。
+
+### make_pump_probe_field_from_templates
+
+`make_pump_probe_field_from_templates(...)` 用 zero-centered templates 构造 pump-probe field。
+
+当前 pump-probe convention 是：
+
+```text
+probe_center_fs 默认 0
+pump_center_fs = probe_center_fs - delay_fs
+```
+
+因此它默认固定 probe，然后根据 delay 移动 pump。
+
+示例：
+
+```python
+field = make_pump_probe_field_from_templates(
+    pump_template=pump_template,
+    probe_template=probe_template,
+    delay_fs=100.0,
+    probe_center_fs=0.0,
+)
+```
+
+含义：
+
+```text
+probe center = 0 fs
+pump center = -100 fs
+```
+
+### make_ta_field_from_templates
+
+`make_ta_field_from_templates(...)` 是 template-based helper 的兼容入口。可以传：
+
+```text
+probe_delay_fs
+```
+
+或：
+
+```text
+delay_fs
+```
+
+二者都传时必须一致。
+
+## 2DES helper
+
+主要对象：
+
+```text
+TwoDESField
+```
+
+主要 helper：
+
+```text
+make_twodes_gaussian_field
+iter_twodes_gaussian_fields
+```
+
+`TwoDESField` 是三脉冲 field series：
+
+```text
+sub_field_names = ("pump1", "pump2", "probe")
+```
+
+当前 Gaussian helper 的中心时间约定：
+
+```text
+pump2_center_fs = pump1_center_fs + pump_tau_fs
+probe_center_fs = pump2_center_fs + probe_delay_fs
+```
+
+## 推荐导入路径
+
+推荐从 public API 导入：
+
+```python
+from qudpy_sjh.utils.fields import (
+    FieldPhyRoot,
+    FieldPhyCustomed,
+    TimeShiftedField,
+    FieldPhySeries,
+    CarrierFieldPhysical,
+    GaussianCarrierFieldPhysical,
+    TAField,
+    TwoDESField,
+    make_default_carrier_field,
+    make_default_gaussian_carrier_field,
+    make_pump_probe_field_from_templates,
+    make_ta_field_from_templates,
+    make_ta_gaussian_field,
+    make_twodes_gaussian_field,
+)
+```
+
+普通用户不应直接构造 `_CodeFieldAdapter`。它是 `ParaNormalizer` 和 solver 内部使用的 code-unit adapter。
