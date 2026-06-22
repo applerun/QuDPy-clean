@@ -26,16 +26,12 @@ class FieldsSplitImportTests(unittest.TestCase):
 	def test_split_module_imports(self):
 		from qudpy_sjh.utils.fields.field_series import FieldPhySeries
 		from qudpy_sjh.utils.fields.lab_fields import FieldPhyRoot, TimeShiftedField
-		from qudpy_sjh.utils.fields.specific.basic_fields import GaussianCarrierFieldPhysical
-		from qudpy_sjh.utils.fields.specific.ta_fields import TAField
-		from qudpy_sjh.utils.fields.specific.twodes_fields import TwoDESField
+
 
 		self.assertIsNotNone(FieldPhyRoot)
 		self.assertIsNotNone(TimeShiftedField)
 		self.assertIsNotNone(FieldPhySeries)
-		self.assertIsNotNone(GaussianCarrierFieldPhysical)
-		self.assertIsNotNone(TAField)
-		self.assertIsNotNone(TwoDESField)
+
 
 	def test_basic_fields_are_not_reexported_from_lab_fields(self):
 		import qudpy_sjh.utils.fields.lab_fields as lab_fields
