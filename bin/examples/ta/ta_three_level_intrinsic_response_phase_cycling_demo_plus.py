@@ -9,7 +9,12 @@ Then run this file instead. It calls the base demo first, then adds:
 
 1. pure-probe IO preview using qudpy_sjh.utils.io.save_result_case;
 2. pure-probe absorption spectrum figure and CSV;
-3. selected-energy TA kinetics figure and CSV.
+3. selected-delay IO previews using qudpy_sjh.utils.io.save_result_case;
+4. selected-energy TA kinetics figure and CSV.
+
+Note: ``ta_diff_spectra_delay_*.png`` files are spectral-analysis figures from the
+base demo, not density-matrix IO previews. IO preview only refers to trajectory
+preview figures produced by ``qudpy_sjh.utils.io.save_result_case``.
 
 This file intentionally does not change the base checkpoint naming rules. Existing
 checkpoints such as ``phase_0_delay_80_fs.ckp`` should still be reused by the base
@@ -211,6 +216,130 @@ def save_probe_io_preview(
         result["preview_easy_copy"] = str(easy_path)
 
     return result
+
+
+def run_selected_delay_phase0_case(
+    base,
+    config,
+    *,
+    delay_fs: float,
+    output_dir: Path,
+    normalizer,
+):
+    """Load or run the phase-0 pump+probe case using the base map checkpoint key.
+
+    This intentionally reuses the base map checkpoint name:
+        phase_0_delay_<delay>_fs.ckp
+
+    It avoids creating separate trace_delay_* checkpoints just for IO preview.
+    """
+
+    delay_label = base.safe_delay_label(delay_fs)
+    map_name = "phase_0"
+    case_key = f"{map_name}_delay_{delay_label}_fs"
+
+    field = base.make_ta_field(
+        config,
+        delay_fs=float(delay_fs),
+        pump_phase_rad=0.0,
+        name=case_key,
+    )
+    params = base.make_physical_params(
+        config,
+        field,
+        case_name=case_key,
+        description=f"Selected-delay IO preview case, delay={delay_fs:g} fs, phase=0.",
+    )
+    return base.run_with_checkpoint(
+        params,
+        normalizer=normalizer,
+        output_dir=output_dir,
+        case_key=case_key,
+        config=config,
+    )
+
+
+def _copy_io_preview_or_raise(written: dict[str, Path], *, expected_preview: Path, easy_path: Path) -> Path:
+    """Copy IO preview to an easy top-level path and fail loudly if it is missing."""
+
+    preview_path = written.get("preview")
+    if preview_path is None:
+        preview_path = expected_preview
+    preview_path = Path(preview_path)
+
+    if not preview_path.exists():
+        raise FileNotFoundError(
+            "IO preview was not generated. Expected: "
+            f"{preview_path}\n"
+            "Check save_result_case(output_preview=True) and the returned paths."
+        )
+
+    easy_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(preview_path, easy_path)
+    return easy_path
+
+
+def save_selected_delay_io_previews(
+    base,
+    config,
+    *,
+    output_dir: Path,
+    preview_dir: Path,
+    normalizer,
+    example_name: str,
+    preview_dpi: int,
+) -> dict[str, str]:
+    """Save selected-delay TA previews through utils.io.save_result_case.
+
+    The top-level rho_preview_delay_*.png files are convenience copies of the
+    IO-generated preview.png files. They intentionally overwrite the base demo's
+    legacy hand-drawn rho_preview_delay_*.png outputs, if those files exist.
+    """
+
+    from qudpy_sjh.utils.io import save_result_case
+
+    io_root = preview_dir / "io_preview"
+    outputs: dict[str, str] = {}
+
+    for target_delay in tuple(float(x) for x in config.preview_delays_fs):
+        delay_label = base.safe_delay_label(target_delay)
+        case_name = f"ta_delay_{delay_label}_fs_phase_0"
+
+        print(f"[extra] selected-delay IO preview: delay={target_delay:g} fs -> {case_name}")
+        result = run_selected_delay_phase0_case(
+            base,
+            config,
+            delay_fs=target_delay,
+            output_dir=output_dir,
+            normalizer=normalizer,
+        )
+
+        written = save_result_case(
+            result,
+            io_root,
+            output_data=False,
+            output_preview=True,
+            save_json=True,
+            append_results_csv=False,
+            preview_dpi=int(preview_dpi),
+            example_name=example_name,
+            condition_name="selected_delay_phase_0",
+            case_name=case_name,
+        )
+
+        for key, value in written.items():
+            outputs[f"{case_name}_{key}"] = str(value)
+
+        expected_preview = io_root / case_name / "figs" / "preview.png"
+        easy_path = preview_dir / f"rho_preview_delay_{delay_label}.png"
+        copied = _copy_io_preview_or_raise(
+            written,
+            expected_preview=expected_preview,
+            easy_path=easy_path,
+        )
+        outputs[f"{case_name}_preview_easy_copy"] = str(copied)
+
+    return outputs
 
 
 def write_probe_absorption_csv(base, *, path: Path, probe_response: dict[str, np.ndarray]) -> Path:
@@ -441,6 +570,17 @@ def add_extra_outputs(
     )
     outputs.update({f"probe_io_{key}": value for key, value in probe_preview.items()})
 
+    selected_delay_previews = save_selected_delay_io_previews(
+        base,
+        config,
+        output_dir=output_dir,
+        preview_dir=preview_dir,
+        normalizer=normalizer,
+        example_name=config.example_name,
+        preview_dpi=preview_dpi,
+    )
+    outputs.update({f"selected_delay_io_{key}": value for key, value in selected_delay_previews.items()})
+
     probe_absorption_csv = write_probe_absorption_csv(
         base,
         path=data_dir / "probe_only_absorption_spectrum.csv",
@@ -505,6 +645,7 @@ def add_extra_outputs(
             "outputs": outputs,
             "notes": {
                 "pure_probe_preview": "Generated with qudpy_sjh.utils.io.save_result_case, then copied to figures/preview/probe_only_io_preview.png for convenience.",
+                "selected_delay_previews": "Generated with qudpy_sjh.utils.io.save_result_case; top-level rho_preview_delay_*.png files are convenience copies of IO preview.png files.",
                 "checkpoint_policy": "Uses the base demo run_with_checkpoint and preserves the base case keys, including *_fs suffixes.",
             },
         },
