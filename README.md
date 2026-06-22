@@ -4,22 +4,18 @@
 
 `QuDPy-clean` 是从旧 QuDPy 仓库迁移出的干净版本，用于学习、验证和组织 N-level optical Bloch dynamics、lab-frame physical field 输入、full-window quantum dynamics solver 以及基础谱学后处理。
 
-当前仓库仍处于重构阶段。文档和示例应以当前 `main` 分支代码为准，避免继续沿用旧仓库中的实验性架构表述。
-
-当前代码包路径为：
+当前文档以 `main` 分支代码为准。代码包路径统一为：
 
 ```text
 qudpy_sjh/
 ```
-
-旧文档中如果仍出现 `sjh_learn/`，应视为历史命名残留。后续文档建议统一改为 `qudpy_sjh/`。
 
 ## 当前主线
 
 当前主线可以概括为：
 
 ```text
-physical lab-frame field
+lab-frame physical field
 -> NLevelPhysicalParams(..., field=field)
 -> ParaNormalizer
 -> internal code-unit field adapter
@@ -28,18 +24,27 @@ physical lab-frame field
 -> spectroscopy / IO / plotting / workflow
 ```
 
-当前推荐强调的能力包括：
+推荐使用的 field 主线是：
 
-- lab-frame physical field；
-- field time shift；
-- pump-probe / TA / 2DES field helper；
-- physical-to-code normalizer；
-- full-window lab-frame exact solver；
-- ordinary `DynamicsResult`；
-- spectroscopy absorption response；
-- 普通 CSV / NPZ / JSON metadata 输出。
+```text
+qudpy_sjh.utils.fields
+  FieldPhyRoot
+  FieldPhyCustomed
+  TimeShiftedField
+  FieldPhySeries
 
-当前主线不宣传 piecewise propagation、dark propagation、active/dark `PropagationPiece`、`PieceDynamicsResultSeries`、`materialize_full` 或 `run_case(piecewise=...)`。
+qudpy_sjh.utils.fields.carrier_envelope
+  CarrierSpec
+  EnvelopeSpec
+  GaussianEnvelopeSpec
+  SechEnvelopeSpec
+  ConstantEnvelopeSpec
+  CarrierEnvelopeField
+  make_gaussian_carrier_envelope_field
+  make_pump_probe_field_series
+```
+
+当前主线不宣传 piecewise propagation、dark propagation、`ActiveWindow`、`PropagationPiece`、`PieceDynamicsResultSeries`、`materialize_full`、`run_case(piecewise=...)` 或复杂 transient_absorption scaffold。
 
 ## 安装与环境
 
@@ -58,26 +63,29 @@ matplotlib
 import qudpy_sjh
 ```
 
-如果后续补充 `pyproject.toml`、`setup.py` 或其它安装配置，应同步更新本节。
-
 ## 最小工作流
 
 下面示例展示当前主线的最小调用边界。参数只用于说明接口结构，不代表具体物理系统建议。
 
 ```python
-from qudpy_sjh.utils.fields import make_default_gaussian_carrier_field
 from qudpy_sjh.utils.core import (
     NLevelPhysicalParams,
-    RelaxationChannel,
+    ParaNormalizer,
     PureDephasingChannel,
+    RelaxationChannel,
     run_case,
 )
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    make_gaussian_carrier_envelope_field,
+)
 
-field = make_default_gaussian_carrier_field(
+field = make_gaussian_carrier_envelope_field(
     E0_MV_per_cm=0.05,
-    laser_energy_eV=1.5,
-    pulse_center_fs=0.0,
-    pulse_sigma_fs=10.0,
+    laser_energy_eV=1.50,
+    center_fs=0.0,
+    sigma_fs=10.0,
+    phase_rad=0.0,
+    name="probe",
 )
 
 params = NLevelPhysicalParams(
@@ -102,9 +110,10 @@ params = NLevelPhysicalParams(
             Tphi_fs=200.0,
         ),
     ),
+    solver_mode="lab_exact",
 )
 
-result = run_case(params)
+result = run_case(params, normalizer=ParaNormalizer(auto_scale=True))
 ```
 
 `result` 是普通 `DynamicsResult`，可用于：
@@ -115,6 +124,55 @@ populations = result.populations()
 field_values = result.field_MV_per_cm_values()
 metadata = result.metadata_dict()
 ```
+
+## carrier-envelope field 语义
+
+`CarrierEnvelopeField` 使用有限脉冲的 carrier-envelope 约定：
+
+```text
+E(t) = 2 E0 envelope(t) cos[omega * (t - center) + phase]
+```
+
+其中 `center` 来自 envelope 的 `center_fs`。`phase_rad` 是相对于 envelope center 定义的 carrier phase，不是全局 lab-frame `omega*t + phase`。
+
+`CarrierEnvelopeField` 不包含 pump / probe / LO 这类 role。role 应由 `FieldPhySeries.sub_field_names`、case metadata 或 workflow 层表达。
+
+## pump-probe field 组合
+
+当前推荐用普通 `CarrierEnvelopeField` 构造单个脉冲，再用 `FieldPhySeries` 表达 pump / probe 组合：
+
+```python
+from qudpy_sjh.utils.fields import FieldPhySeries
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    make_gaussian_carrier_envelope_field,
+)
+
+probe = make_gaussian_carrier_envelope_field(
+    E0_MV_per_cm=0.008,
+    laser_energy_eV=1.62,
+    center_fs=0.0,
+    sigma_fs=7.0,
+    phase_rad=0.0,
+    name="probe",
+)
+
+pump = make_gaussian_carrier_envelope_field(
+    E0_MV_per_cm=0.30,
+    laser_energy_eV=1.55,
+    center_fs=-100.0,
+    sigma_fs=12.0,
+    phase_rad=0.0,
+    name="pump",
+)
+
+field = FieldPhySeries(
+    fields=(pump, probe),
+    sub_field_names=("pump", "probe"),
+    name="pump_probe",
+)
+```
+
+`make_pump_probe_field_series(pump_field=..., probe_field=...)` 是同一组合方式的便利 helper。delay scan、phase cycling、probe-only reference 和 TA map 生成属于 workflow 层。
 
 ## 目录结构
 
@@ -136,11 +194,12 @@ qudpy_sjh/
       __init__.py
       lab_fields.py
       field_series.py
-      specific/
+      carrier_envelope/
         __init__.py
-        basic_fields.py
-        ta_fields.py
-        twodes_fields.py
+        carrier_spec.py
+        envelope_spec.py
+        carrier_envelope_field.py
+        builders.py
 
     spectroscopy/
       __init__.py
@@ -171,8 +230,6 @@ docs/detailed API/io_metadata_zh.md
 docs/detailed API/workflow_examples_zh.md
 ```
 
-`docs/document_summary.md` 建议替代旧的 `docs/document_updated.md` 和 `docs/document_update_summary.md`。
-
 ## 测试
 
 当前未确认存在独立稳定的 `tests/` 目录。建议先做编译检查：
@@ -181,22 +238,37 @@ docs/detailed API/workflow_examples_zh.md
 python -m compileall qudpy_sjh
 ```
 
-然后运行仓库中当前维护的 demo、example 或 scratch validation scripts。具体脚本名称以后续维护的 `bin/`、`experiments/` 或 `scratch/` 文档为准。
+然后运行当前维护的 example，例如：
+
+```bash
+python bin/examples/ta/ta_three_level_intrinsic_response_phase_cycling_demo.py --quick
+```
 
 ## 当前不在主线的内容
 
-以下旧架构或实验性方向不应在 README 和主线文档中宣传：
+以下旧接口或旧架构不应作为当前推荐 API 宣传：
 
 ```text
+specific/basic_fields.py
+specific/ta_fields.py
+specific/twodes_fields.py
+CarrierFieldPhysical
+GaussianCarrierFieldPhysical
+TAField
+TwoDESField
+make_default_gaussian_carrier_field
+make_ta_gaussian_field
+make_pump_probe_field_from_templates
+make_twodes_gaussian_field
 piecewise propagation
 dark propagation
-active/dark PropagationPiece
+ActiveWindow
+PropagationPiece
 PieceDynamicsResultSeries
 materialize_full
 run_case(piecewise=...)
 save_result_case 对 piecewise series 的支持
-long-window piecewise benchmark
-复杂 transient_absorption scaffold 主线
+complex transient_absorption scaffold
 ```
 
 如果未来需要重新引入其中某些能力，应先作为独立设计 proposal 讨论，不应隐式恢复到当前 core / IO / README 主线中。

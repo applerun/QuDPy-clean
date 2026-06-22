@@ -1,16 +1,41 @@
 # Deprecated Boundaries
 
-本文档记录当前 `QuDPy-clean` 不进入主线的旧架构边界。它的目的不是删除历史经验，而是防止旧仓库中的实验性设计被误写进 README、架构文档、field 文档、solver 文档或 IO 文档。
+本文档记录当前 `QuDPy-clean` 不进入主线的旧架构和旧 API 边界。目的不是删除历史经验，而是防止旧仓库中的实验性设计被误写进 README、架构文档、field 文档、solver 文档或 IO 文档。
+
+## 当前主线
 
 当前主线是：
 
 ```text
-physical lab-frame field
+lab-frame physical field
 -> NLevelPhysicalParams(..., field=field)
 -> ParaNormalizer
 -> full-window lab_exact solver
 -> ordinary DynamicsResult
 -> spectroscopy / IO / workflow
+```
+
+field 主线是：
+
+```text
+FieldPhyRoot
+FieldPhyCustomed
+TimeShiftedField
+FieldPhySeries
+carrier_envelope.CarrierEnvelopeField
+```
+
+carrier-envelope 主线是：
+
+```text
+CarrierSpec
+EnvelopeSpec
+GaussianEnvelopeSpec
+SechEnvelopeSpec
+ConstantEnvelopeSpec
+CarrierEnvelopeField
+make_gaussian_carrier_envelope_field
+make_pump_probe_field_series
 ```
 
 以下内容不属于当前主线。
@@ -35,6 +60,34 @@ complex transient_absorption scaffold
 
 这些名称如果出现在旧文档、旧脚本说明或旧注释中，应被标记为 deprecated、archived 或 historical note，不应写成当前能力。
 
+## 不再作为推荐 field API 的旧接口
+
+以下旧 field 文件、类或 helper 不应写成当前 public API 主线：
+
+```text
+specific/basic_fields.py
+specific/ta_fields.py
+specific/twodes_fields.py
+CarrierFieldPhysical
+GaussianCarrierFieldPhysical
+TAField
+TwoDESField
+make_default_carrier_field
+make_default_gaussian_carrier_field
+make_ta_gaussian_field
+make_pump_probe_field_from_templates
+make_ta_field_from_templates
+make_twodes_gaussian_field
+```
+
+推荐替代表述：
+
+```text
+Use CarrierEnvelopeField or make_gaussian_carrier_envelope_field(...) for finite optical pulses.
+Use FieldPhySeries(..., sub_field_names=(...)) to express pump / probe / LO roles.
+Keep delay scan, phase cycling and TA map construction in workflow scripts.
+```
+
 ## 为什么不应放进 README
 
 README 面向第一次打开仓库的人，应只描述当前稳定主线。
@@ -49,13 +102,14 @@ README 面向第一次打开仓库的人，应只描述当前稳定主线。
 
 ```text
 lab-frame physical field
-field time shift
-pump-probe / TA / 2DES field helper
+carrier-envelope finite pulse
+FieldPhySeries pump/probe composition
 ParaNormalizer
 full-window lab_exact solver
 ordinary DynamicsResult
 lab_frame_absorption_response
 ordinary IO / metadata
+workflow-level delay scan and phase cycling
 ```
 
 ## 为什么不应放进 core 主线
@@ -162,20 +216,21 @@ run_case(active_dark=...)
 当前 TA / pump-probe 主线应分层：
 
 ```text
-fields layer:
-  TAField
-  make_ta_gaussian_field
-  make_pump_probe_field_from_templates
+field layer:
+  make_gaussian_carrier_envelope_field(...)
+  FieldPhySeries(fields=(pump, probe), sub_field_names=("pump", "probe"))
 
 solver layer:
   ordinary full-window lab_exact run_case
 
 spectroscopy layer:
+  polarization_C_per_m2
   lab_frame_absorption_response
 
 workflow layer:
   delay scan
   probe-only reference
+  phase cycling
   differential spectrum
   figure layout
 ```
@@ -185,9 +240,9 @@ workflow layer:
 当前可以保留的 TA 能力是：
 
 ```text
-pump-probe physical field helper
-TAField["pump"] / TAField["probe"]
-delay convention
+pump-probe physical field composition
+FieldPhySeries["pump"] / FieldPhySeries["probe"]
+delay convention in workflow
 ordinary full-window simulation
 post-processing absorption response
 ```
@@ -219,6 +274,14 @@ run_case(piecewise
 save_result_case(piecewise
 long-window piecewise benchmark
 transient_absorption scaffold
+CarrierFieldPhysical
+GaussianCarrierFieldPhysical
+TAField
+TwoDESField
+make_default_gaussian_carrier_field
+make_ta_gaussian_field
+make_pump_probe_field_from_templates
+make_twodes_gaussian_field
 ```
 
 如果出现，应判断它是否只是 deprecated boundary。如果不是，应移出主线文档。
@@ -268,5 +331,5 @@ TA scaffold handles long-window active/dark propagation.
 推荐改为：
 
 ```text
-TA-related code currently provides pump-probe field helpers and spectroscopy post-processing utilities. Delay scan and response-map construction belong to the workflow layer.
+TA-related code currently provides carrier-envelope pump-probe field composition and spectroscopy post-processing utilities. Delay scan, phase cycling and response-map construction belong to the workflow layer.
 ```

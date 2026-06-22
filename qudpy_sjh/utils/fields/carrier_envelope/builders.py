@@ -75,10 +75,10 @@ def make_sech_carrier_envelope_field(
             phase_rad=float(phase_rad),
             metadata={"laser_energy_eV": float(laser_energy_eV)},
         ),
-        envelope=SechEnvelopeSpec(
-            center_fs=float(center_fs),
-            tau_fs=float(tau_fs),
-            amplitude=float(envelope_amplitude),
+        envelope = SechEnvelopeSpec(
+            width_fs = float(tau_fs),
+            center_fs = float(center_fs),
+            amplitude = float(envelope_amplitude),
         ),
         name=name,
         metadata=_metadata_copy(metadata),

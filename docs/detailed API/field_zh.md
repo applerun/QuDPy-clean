@@ -9,21 +9,20 @@ qudpy_sjh/utils/fields/
   __init__.py
   lab_fields.py
   field_series.py
-  specific/
+  carrier_envelope/
     __init__.py
-    basic_fields.py
-    ta_fields.py
-    twodes_fields.py
+    carrier_spec.py
+    envelope_spec.py
+    carrier_envelope_field.py
+    builders.py
 ```
 
 职责边界：
 
-- `lab_fields.py`：基础 lab-frame field 抽象和 wrapper；
+- `lab_fields.py`：基础 lab-frame field 抽象、time-shift wrapper 和 code-unit adapter；
 - `field_series.py`：多个 physical field 的线性叠加与 scan helper；
-- `specific/basic_fields.py`：基础载波场和高斯载波场；
-- `specific/ta_fields.py`：TA / pump-probe field helper；
-- `specific/twodes_fields.py`：2DES field helper；
-- `fields/__init__.py`：用户侧 public API re-export。
+- `carrier_envelope/`：显式 carrier + envelope 语义的有限脉冲 field；
+- `fields/__init__.py`：基础 field public API re-export。
 
 ## 单位约定
 
@@ -43,7 +42,7 @@ phase: rad
 E = field(t_fs)
 ```
 
-其中 `E` 的单位是 `MV/cm`。
+其中 `E` 的单位是 `MV/cm`，返回数组 shape 必须与 `t_fs` 一致。
 
 ## FieldPhyRoot
 
@@ -89,73 +88,6 @@ normalization_rate_candidates_fs_inv
 
 否则 normalizer 的 auto-scale 只会根据系统能量、coupling 和 dissipative rates 选择时间尺度。
 
-## 基础场
-
-### CarrierFieldPhysical
-
-`CarrierFieldPhysical` 表示 lab-frame continuous carrier field：
-
-```text
-E(t_fs) = 2 E0 cos(omega_L t_fs + phase)
-```
-
-主要字段：
-
-```text
-E0_MV_per_cm
-omega_L_fs_inv
-phase_rad
-name
-metadata
-```
-
-推荐 helper：
-
-```python
-make_default_carrier_field(
-    E0_MV_per_cm=...,
-    laser_energy_eV=...,
-    phase_rad=0.0,
-)
-```
-
-该 helper 根据 `laser_energy_eV` 生成 `omega_L_fs_inv`。
-
-### GaussianCarrierFieldPhysical
-
-`GaussianCarrierFieldPhysical` 表示高斯包络载波场：
-
-```text
-E(t_fs)
-=
-2 E0 exp[-(t_fs - center_fs)^2 / (2 sigma_fs^2)]
-cos(omega_L t_fs + phase)
-```
-
-主要字段：
-
-```text
-E0_MV_per_cm
-omega_L_fs_inv
-center_fs
-sigma_fs
-phase_rad
-name
-metadata
-```
-
-推荐 helper：
-
-```python
-make_default_gaussian_carrier_field(
-    E0_MV_per_cm=...,
-    laser_energy_eV=...,
-    pulse_center_fs=...,
-    pulse_sigma_fs=...,
-    phase_rad=0.0,
-)
-```
-
 ## TimeShiftedField
 
 `TimeShiftedField` 是 non-mutating time-shift wrapper。
@@ -176,29 +108,17 @@ E_shifted(t) = E_original(t - shift_fs)
 例子：
 
 ```python
-pulse_0 = make_default_gaussian_carrier_field(
+pulse_0 = make_gaussian_carrier_envelope_field(
     E0_MV_per_cm=0.05,
     laser_energy_eV=1.5,
-    pulse_center_fs=0.0,
-    pulse_sigma_fs=10.0,
+    center_fs=0.0,
+    sigma_fs=10.0,
 )
 
 pulse_50 = pulse_0.time_shifted(50.0)
 ```
 
-此时 `pulse_50` 的中心移动到 `50 fs`。
-
-连续平移会合并：
-
-```python
-field.time_shifted(20.0).time_shifted(30.0)
-```
-
-等价于：
-
-```python
-field.time_shifted(50.0)
-```
+在普通 `TimeShiftedField` wrapper 中，这等价于 `pulse_50(t)=pulse_0(t-50 fs)`。在 `CarrierEnvelopeField.time_shifted(...)` 中，当前实现采用 envelope center shift：`center_new = center_old + shift_fs`，carrier phase 仍相对于新的 envelope center 定义。
 
 ## FieldPhySeries
 
@@ -228,132 +148,229 @@ E_probe = field["probe"](t_fs)
 NLevelPhysicalParams(..., field=field)
 ```
 
-solver 不需要知道内部有几个 subfield。多场叠加只发生在 physical field 层。
+solver 不需要知道内部有几个 subfield。多场叠加只发生在 physical field 层。`sub_field_names` 可用于表达 pump / probe / LO 等 workflow role。
 
-## TA / pump-probe helper
+## carrier_envelope 子包
 
-主要对象：
-
-```text
-TAField
-```
-
-主要 helper：
-
-```text
-make_ta_gaussian_field
-make_pump_probe_field_from_templates
-make_ta_field_from_templates
-iter_ta_gaussian_fields
-```
-
-### TAField
-
-`TAField` 是 `FieldPhySeries` 的子类，用于 pump-probe / transient absorption 场。它通常包含：
-
-```text
-sub_field_names = ("pump", "probe")
-```
-
-可通过：
+推荐从子包导入：
 
 ```python
-pump = field["pump"]
-probe = field["probe"]
-```
-
-提取子场。
-
-### make_ta_gaussian_field
-
-`make_ta_gaussian_field(...)` 用于直接构造 Gaussian pump 和 Gaussian probe。
-
-当前语义是：
-
-```text
-probe_center_fs = pump_center_fs + probe_delay_fs
-```
-
-因此它默认固定 pump center，然后根据 delay 移动 probe。
-
-### make_pump_probe_field_from_templates
-
-`make_pump_probe_field_from_templates(...)` 用 zero-centered templates 构造 pump-probe field。
-
-当前 pump-probe convention 是：
-
-```text
-probe_center_fs 默认 0
-pump_center_fs = probe_center_fs - delay_fs
-```
-
-因此它默认固定 probe，然后根据 delay 移动 pump。
-
-示例：
-
-```python
-field = make_pump_probe_field_from_templates(
-    pump_template=pump_template,
-    probe_template=probe_template,
-    delay_fs=100.0,
-    probe_center_fs=0.0,
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    CarrierSpec,
+    EnvelopeSpec,
+    GaussianEnvelopeSpec,
+    SechEnvelopeSpec,
+    ConstantEnvelopeSpec,
+    CarrierEnvelopeField,
+    make_gaussian_carrier_envelope_field,
+    make_pump_probe_field_series,
 )
 ```
 
-含义：
+当前核心对象：
 
 ```text
-probe center = 0 fs
-pump center = -100 fs
+CarrierSpec
+EnvelopeSpec
+GaussianEnvelopeSpec
+SechEnvelopeSpec
+ConstantEnvelopeSpec
+CarrierEnvelopeField
 ```
 
-### make_ta_field_from_templates
-
-`make_ta_field_from_templates(...)` 是 template-based helper 的兼容入口。可以传：
+当前推荐 helper：
 
 ```text
-probe_delay_fs
+make_gaussian_carrier_envelope_field
+make_pump_probe_field_series
 ```
 
-或：
+`carrier_envelope.__init__` 还导出若干通用 builder；文档主线优先使用直接构造 `CarrierEnvelopeField` 或 `make_gaussian_carrier_envelope_field(...)`。
+
+## CarrierSpec
+
+`CarrierSpec` 表示单个准单色 carrier。
+
+核心字段：
 
 ```text
-delay_fs
+omega_fs_inv
+phase_rad
+label
+metadata
 ```
 
-二者都传时必须一致。
+也可由能量构造：
 
-## 2DES helper
-
-主要对象：
-
-```text
-TwoDESField
+```python
+carrier = CarrierSpec.from_energy_eV(
+    laser_energy_eV=1.55,
+    phase_rad=0.0,
+)
 ```
 
-主要 helper：
+phase 约定：
 
 ```text
-make_twodes_gaussian_field
-iter_twodes_gaussian_fields
+carrier phase = omega_fs_inv * (t_fs - center_fs) + phase_rad
 ```
 
-`TwoDESField` 是三脉冲 field series：
+因此 `phase_rad` 是相对于 envelope center 定义的 carrier phase，不是全局 lab-frame `omega*t + phase`。
 
-```text
-sub_field_names = ("pump1", "pump2", "probe")
+## EnvelopeSpec
+
+`EnvelopeSpec` 是 dimensionless envelope 的抽象基类。具体 envelope 应提供：
+
+```python
+value(t_fs)
+shifted(shift_fs)
+to_dict()
 ```
 
-当前 Gaussian helper 的中心时间约定：
+当前主要 concrete spec：
 
 ```text
-pump2_center_fs = pump1_center_fs + pump_tau_fs
-probe_center_fs = pump2_center_fs + probe_delay_fs
+GaussianEnvelopeSpec
+SechEnvelopeSpec
+ConstantEnvelopeSpec
+```
+
+`GaussianEnvelopeSpec`：
+
+```text
+envelope(t) = amplitude * exp[-(t-center)^2/(2*sigma^2)]
+```
+
+`SechEnvelopeSpec`：
+
+```text
+envelope(t) = amplitude / cosh[(t-center)/width]
+```
+
+`ConstantEnvelopeSpec`：
+
+```text
+envelope(t) = amplitude
+```
+
+## CarrierEnvelopeField
+
+`CarrierEnvelopeField` 是当前推荐的 finite optical pulse field。它组合一个 `CarrierSpec` 和一个 `EnvelopeSpec`。
+
+物理约定：
+
+```text
+E(t) = 2 E0 envelope(t) cos[omega * (t - center) + phase]
+```
+
+其中：
+
+```text
+E0 = E0_MV_per_cm
+envelope(t) = self.envelope.value(t)
+center = self.envelope.center_fs
+omega = self.carrier.omega_fs_inv
+phase = self.carrier.phase_rad
+```
+
+注意：
+
+1. `peak_E_MV_per_cm` 在 metadata 中是 `2*E0_MV_per_cm`；
+2. carrier phase 相对于 envelope center 定义；
+3. `CarrierEnvelopeField` 不包含 pump / probe / LO role；
+4. role 应由 `FieldPhySeries.sub_field_names`、case metadata 或 workflow 层表达。
+
+直接构造示例：
+
+```python
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    CarrierEnvelopeField,
+    CarrierSpec,
+    GaussianEnvelopeSpec,
+)
+
+field = CarrierEnvelopeField(
+    E0_MV_per_cm=0.05,
+    carrier=CarrierSpec.from_energy_eV(1.50, phase_rad=0.0),
+    envelope=GaussianEnvelopeSpec(center_fs=0.0, sigma_fs=10.0),
+    name="probe",
+)
+```
+
+helper 构造示例：
+
+```python
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    make_gaussian_carrier_envelope_field,
+)
+
+field = make_gaussian_carrier_envelope_field(
+    E0_MV_per_cm=0.05,
+    laser_energy_eV=1.50,
+    center_fs=0.0,
+    sigma_fs=10.0,
+    phase_rad=0.0,
+    name="probe",
+)
+```
+
+## pump-probe 组合
+
+当前不再推荐把 TA role 写成单独 field subclass。推荐方式是：
+
+```python
+from qudpy_sjh.utils.fields import FieldPhySeries
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    make_gaussian_carrier_envelope_field,
+)
+
+probe = make_gaussian_carrier_envelope_field(
+    E0_MV_per_cm=0.008,
+    laser_energy_eV=1.62,
+    center_fs=0.0,
+    sigma_fs=7.0,
+    phase_rad=0.0,
+    name="probe",
+)
+
+pump = make_gaussian_carrier_envelope_field(
+    E0_MV_per_cm=0.30,
+    laser_energy_eV=1.55,
+    center_fs=-100.0,
+    sigma_fs=12.0,
+    phase_rad=0.0,
+    name="pump",
+)
+
+field = FieldPhySeries(
+    fields=(pump, probe),
+    sub_field_names=("pump", "probe"),
+    name="pump_probe",
+)
+```
+
+等价地，可用便利 helper：
+
+```python
+from qudpy_sjh.utils.fields.carrier_envelope import make_pump_probe_field_series
+
+field = make_pump_probe_field_series(
+    pump_field=pump,
+    probe_field=probe,
+)
+```
+
+delay convention 建议放在 workflow 中显式写清楚。例如当前 TA demo 使用：
+
+```text
+probe_center_fs 固定
+pump_center_fs = probe_center_fs - delay_fs
+positive delay means pump before probe
 ```
 
 ## 推荐导入路径
 
-推荐从 public API 导入：
+基础 field API：
 
 ```python
 from qudpy_sjh.utils.fields import (
@@ -361,17 +378,43 @@ from qudpy_sjh.utils.fields import (
     FieldPhyCustomed,
     TimeShiftedField,
     FieldPhySeries,
-    CarrierFieldPhysical,
-    GaussianCarrierFieldPhysical,
-    TAField,
-    TwoDESField,
-    make_default_carrier_field,
-    make_default_gaussian_carrier_field,
-    make_pump_probe_field_from_templates,
-    make_ta_field_from_templates,
-    make_ta_gaussian_field,
-    make_twodes_gaussian_field,
+    iter_scan_params,
+)
+```
+
+carrier-envelope API：
+
+```python
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    CarrierSpec,
+    EnvelopeSpec,
+    GaussianEnvelopeSpec,
+    SechEnvelopeSpec,
+    ConstantEnvelopeSpec,
+    CarrierEnvelopeField,
+    make_gaussian_carrier_envelope_field,
+    make_pump_probe_field_series,
 )
 ```
 
 普通用户不应直接构造 `_CodeFieldAdapter`。它是 `ParaNormalizer` 和 solver 内部使用的 code-unit adapter。
+
+## 不再作为当前主线宣传的旧接口
+
+以下旧接口若在旧文档或旧脚本中出现，应视为历史残留或 archived code，不应作为当前推荐 public API：
+
+```text
+specific/basic_fields.py
+specific/ta_fields.py
+specific/twodes_fields.py
+CarrierFieldPhysical
+GaussianCarrierFieldPhysical
+TAField
+TwoDESField
+make_default_carrier_field
+make_default_gaussian_carrier_field
+make_pump_probe_field_from_templates
+make_ta_field_from_templates
+make_ta_gaussian_field
+make_twodes_gaussian_field
+```

@@ -1,21 +1,18 @@
 # 当前文档总览与更新摘要
 
-本文档合并旧的 `docs/document_updated.md` 与 `docs/document_update_summary.md`，用于记录 `QuDPy-clean` 当前文档主线、active code path、模块边界和需要替换的旧表述。
-
-当前代码包路径为：
+本文档记录 `QuDPy-clean` 当前文档主线、active code path、模块边界和需要替换的旧表述。当前代码包路径统一为：
 
 ```text
 qudpy_sjh/
 ```
-
-旧文档中若仍出现 `sjh_learn/`，应视为历史命名残留。后续中文文档建议统一使用 `qudpy_sjh/`。
 
 ## 当前主线
 
 当前 active code path 是：
 
 ```text
-FieldPhyRoot / FieldPhySeries / TAField / TwoDESField
+FieldPhyRoot / FieldPhyCustomed / TimeShiftedField / FieldPhySeries
++ carrier_envelope.CarrierEnvelopeField
 -> NLevelPhysicalParams(..., field=field)
 -> ParaNormalizer
 -> _CodeFieldAdapter
@@ -29,14 +26,14 @@ FieldPhyRoot / FieldPhySeries / TAField / TwoDESField
 1. 用户侧光场使用 physical units：时间 `fs`，电场 `MV/cm`，能量 `eV`，偶极矩 `Debye`。
 2. 正式入口是 `NLevelPhysicalParams(..., field=field)`。
 3. `field` 必须是 `FieldPhyRoot` 或其子类 / wrapper。
-4. `NLevelPhysicalParams` 不再把 `field_MV_per_cm`、`laser_energy_eV`、`pulse_center_fs`、`pulse_sigma_fs` 作为顶层主接口。
-5. `ParaNormalizer` 只负责单位换算和 code-unit scaling，不定义物理模型。
-6. 多脉冲叠加只发生在 physical field 层，例如 `FieldPhySeries`、`TAField`、`TwoDESField`。
+4. `ParaNormalizer` 只负责单位换算和 code-unit scaling，不定义物理模型。
+5. 多脉冲叠加只发生在 physical field 层，例如 `FieldPhySeries`。
+6. pump / probe / LO 这类 role 不属于单个 `CarrierEnvelopeField`，应由 `FieldPhySeries.sub_field_names`、case metadata 或 workflow 层表达。
 7. solver 主路径只接收一个 code-unit callable：`args={"field": field}`。
 8. 当前主线是 full-window `lab_exact`。
 9. 标准结果对象是 `DynamicsResult`。
 10. 一个 `DynamicsResult` 只表示一条 density-matrix trajectory。
-11. 参数扫描、delay scan、power scan 和 batch run 属于上层 examples/scripts/workflow，不属于 core。
+11. 参数扫描、delay scan、phase cycling、power scan 和 batch run 属于上层 examples/scripts/workflow，不属于 core。
 12. dipole expectation、polarization、FFT response、absorption response 和 TA response 属于 spectroscopy / analysis 层，不属于 solver/result core。
 
 ## 当前目录理解
@@ -56,11 +53,12 @@ qudpy_sjh/
 │  │  ├─ __init__.py
 │  │  ├─ lab_fields.py
 │  │  ├─ field_series.py
-│  │  └─ specific/
+│  │  └─ carrier_envelope/
 │  │     ├─ __init__.py
-│  │     ├─ basic_fields.py
-│  │     ├─ ta_fields.py
-│  │     └─ twodes_fields.py
+│  │     ├─ carrier_spec.py
+│  │     ├─ envelope_spec.py
+│  │     ├─ carrier_envelope_field.py
+│  │     └─ builders.py
 │  ├─ spectroscopy/
 │  │  ├─ __init__.py
 │  │  ├─ observables.py
@@ -71,7 +69,7 @@ qudpy_sjh/
 │  └─ checks.py
 ```
 
-若本地目录或旧文档仍保留 `utils/model.py`、`utils/solvers.py`、`utils/results.py`、`utils/normalization.py` 或 `utils/analysis/observables.py` 这类旧口径，应视为历史命名或迁移残留。新文档应以 `utils/core/` 和 `utils/spectroscopy/` 为准。
+新文档应以 `utils/core/`、`utils/fields/`、`utils/fields/carrier_envelope/` 和 `utils/spectroscopy/` 为准。
 
 ## 文档分工
 
@@ -94,8 +92,8 @@ docs/detailed API/workflow_examples_zh.md
 
 - `README.md` 面向第一次打开仓库的人；
 - `document_summary.md` 记录当前总架构、文档口径和更新摘要；
-- `deprecated_boundaries_zh.md` 明确旧架构边界；
-- `docs/detailed API/` 下的 7 个文档记录专题 API 与 workflow 边界。
+- `deprecated_boundaries_zh.md` 明确旧架构和旧 field helper 边界；
+- `docs/detailed API/` 下的文档记录专题 API 与 workflow 边界。
 
 ## fields 层摘要
 
@@ -108,44 +106,36 @@ qudpy_sjh/utils/fields/
   __init__.py
   lab_fields.py
   field_series.py
-  specific/
+  carrier_envelope/
     __init__.py
-    basic_fields.py
-    ta_fields.py
-    twodes_fields.py
+    carrier_spec.py
+    envelope_spec.py
+    carrier_envelope_field.py
+    builders.py
 ```
 
-职责边界：
-
-- `lab_fields.py`：基础 lab-frame field 抽象和 wrapper；
-- `field_series.py`：多个 physical field 的线性叠加与 scan helper；
-- `specific/basic_fields.py`：基础载波场和高斯载波场；
-- `specific/ta_fields.py`：TA / pump-probe field helper；
-- `specific/twodes_fields.py`：2DES field helper；
-- `fields/__init__.py`：用户侧 public API re-export。
-
-核心对象：
+`qudpy_sjh.utils.fields` 当前 public API：
 
 ```text
 FieldPhyRoot
-TimeShiftedField
 FieldPhyCustomed
+TimeShiftedField
+make_code_field_adapter
 FieldPhySeries
-CarrierFieldPhysical
-GaussianCarrierFieldPhysical
-TAField
-TwoDESField
+iter_scan_params
 ```
 
-核心 helper：
+`qudpy_sjh.utils.fields.carrier_envelope` 当前主要 API：
 
 ```text
-make_default_carrier_field
-make_default_gaussian_carrier_field
-make_pump_probe_field_from_templates
-make_ta_field_from_templates
-make_ta_gaussian_field
-make_twodes_gaussian_field
+CarrierSpec
+EnvelopeSpec
+GaussianEnvelopeSpec
+SechEnvelopeSpec
+ConstantEnvelopeSpec
+CarrierEnvelopeField
+make_gaussian_carrier_envelope_field
+make_pump_probe_field_series
 ```
 
 `TimeShiftedField` 的约定是：
@@ -156,20 +146,13 @@ shift_fs > 0 表示场整体向更晚时间移动
 E_shifted(t) = E_original(t - shift_fs)
 ```
 
-pump-probe template helper 的约定是：
+`CarrierEnvelopeField` 的物理约定是：
 
 ```text
-probe_center_fs 默认 0
-pump_center_fs = probe_center_fs - delay_fs
+E(t) = 2 E0 envelope(t) cos[omega * (t - center) + phase]
 ```
 
-需要注意：`make_ta_gaussian_field(...)` 当前是另一套直接 Gaussian 构造语义：
-
-```text
-probe_center_fs = pump_center_fs + probe_delay_fs
-```
-
-因此文档中应把 template-based helper 和 direct Gaussian helper 分开说明。
+其中 `center` 来自 envelope 的 `center_fs`。`phase_rad` 是相对于 envelope center 定义的 carrier phase，不是全局 lab-frame `omega*t + phase`。
 
 ## parameters 层摘要
 
@@ -225,7 +208,7 @@ NLevelPhysicalParams
 - 从 `field.reference_MV_per_cm` 读取电场参考尺度；
 - 从 `field.normalization_rate_candidates_fs_inv` 读取 auto-scale 候选速率；
 - 不从 `field.to_dict()` 读取 core 数值参数；
-- 不根据 `Gaussian` / `CW` / `FieldSeries` / `TAField` / `TwoDESField` 写特殊分支。
+- 不根据 Gaussian / CW / pump-probe / TA / 2DES 写特殊分支。
 
 field 缩放关系：
 
@@ -276,6 +259,12 @@ NLevelPhysicalParams
 lab_frame_absorption_response(...)
 ```
 
+主定义：
+
+```text
+absorption = omega * Im[P(omega) / E(omega)]
+```
+
 主输出字段：
 
 ```text
@@ -301,7 +290,38 @@ None
 "hann"
 ```
 
-若需要 `"hamming"` 或其它 window，应先扩展公共 helper，再让所有脚本调用同一套逻辑。
+## TA workflow 摘要
+
+当前 TA workflow 应保持分层：
+
+```text
+field layer:
+  make_gaussian_carrier_envelope_field(...)
+  FieldPhySeries(fields=(pump, probe), sub_field_names=("pump", "probe"))
+
+solver layer:
+  ordinary full-window run_case
+
+spectroscopy layer:
+  polarization_C_per_m2(...)
+  lab_frame_absorption_response(...)
+
+workflow layer:
+  delay scan
+  pump phase cycling
+  probe-only reference reuse
+  differential response map
+  plotting / CSV / JSON
+```
+
+TA response 在 spectroscopy / workflow 层计算：
+
+```text
+S_TA = omega * Im[P_pump_probe(omega)/E_probe(omega)]
+       - omega * Im[P_probe_only(omega)/E_probe(omega)]
+```
+
+不要把 TA map、phase cycling、plotting 塞回 core。
 
 ## IO / metadata 层摘要
 
@@ -333,23 +353,25 @@ case_dir/
 
 当前 IO 不应写 piecewise series 输出，不应写 `materialize_full`。
 
-## 本次合并更新摘要
+## 本次更新摘要
 
 本次文档口径更新重点：
 
-1. 将旧的 `sjh_learn/` 口径更新为当前 `qudpy_sjh/`。
-2. 将旧的 `utils/model.py`、`utils/solvers.py`、`utils/results.py`、`utils/analysis/observables.py` 口径更新为 `utils/core/` 与 `utils/spectroscopy/`。
-3. 明确用户侧正式入口为 `NLevelPhysicalParams(..., field=field)`。
-4. 明确 `field` 是 lab-frame physical field，而不是 solver-unit drive。
-5. 补充 `TimeShiftedField` 的语义：`shift_fs > 0` 表示整体向更晚时间移动。
-6. 区分 `make_ta_gaussian_field(...)` 与 template-based pump-probe helper 的 delay convention。
-7. 将 spectroscopy 主入口更新为 `lab_frame_absorption_response(...)`。
-8. 将 `lab_frame_fft_response_legacy(...)` 标记为较底层 / 历史兼容 helper。
-9. 明确 solver 主线是 full-window `lab_exact`。
-10. 明确标准结果是普通 `DynamicsResult`。
-11. 明确 parameter scan / delay scan / batch workflow 属于 examples/scripts 层。
-12. 明确普通 IO 只保存 full-window `DynamicsResult`。
-13. 移除或降级 piecewise / dark / materialization / long-window benchmark 相关表述。
+1. 将文档主线统一到当前 `qudpy_sjh/` 代码路径。
+2. 将 field 主线改为 `FieldPhyRoot`、`FieldPhyCustomed`、`TimeShiftedField`、`FieldPhySeries` 和 `carrier_envelope` 子包。
+3. 移除旧 `specific/basic_fields.py`、`specific/ta_fields.py`、`specific/twodes_fields.py` 作为推荐 public API 的表述。
+4. 移除 `CarrierFieldPhysical`、`GaussianCarrierFieldPhysical`、`TAField`、`TwoDESField` 和相关 old helper 作为当前主线 API 的表述。
+5. 明确 carrier-envelope phase 是相对于 envelope center 定义的。
+6. 明确 pump / probe / LO role 不属于单个 `CarrierEnvelopeField`。
+7. 将 TA workflow 改为当前 demo 的分层方式。
+8. 明确 probe-only reference 可以只运行一次并复用。
+9. 将 spectroscopy 主入口更新为 `lab_frame_absorption_response(...)`。
+10. 将 `lab_frame_fft_response_legacy(...)` 标记为较底层 / 历史兼容 helper。
+11. 明确 solver 主线是 full-window `lab_exact`。
+12. 明确标准结果是普通 `DynamicsResult`。
+13. 明确 parameter scan / delay scan / phase cycling / batch workflow 属于 examples/scripts 层。
+14. 明确普通 IO 只保存 full-window `DynamicsResult`。
+15. 移除或降级 piecewise / dark / materialization / long-window benchmark / complex transient_absorption scaffold 相关表述。
 
 ## 当前不进入主线的旧架构
 
