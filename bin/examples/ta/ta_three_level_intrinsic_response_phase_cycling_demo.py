@@ -67,7 +67,7 @@ from qudpy_sjh.utils.spectroscopy import (
 	polarization_C_per_m2,
 )
 
-EXAMPLE_NAME = "ta_three_level_intrinsic_response_phase_cycling_demo"
+EXAMPLE_NAME = "ta_three_level_intrinsic_response_phase_cycling_demo_no_relaxation"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / EXAMPLE_NAME
 HC_EV_NM = 1239.8419843320026
 
@@ -175,6 +175,53 @@ def write_csv_rows(path: Path, rows: list[dict[str, Any]]) -> Path:
 		writer.writeheader()
 		writer.writerows(rows)
 	return path
+
+
+def write_all_delay_spectra_csv(
+	path: Path,
+	*,
+	delays_fs: np.ndarray,
+	energy_eV: np.ndarray,
+	phase_stack: np.ndarray,
+	phase_avg: np.ndarray,
+	phase_rms: np.ndarray,
+	phase_avg_unitnorm_diagnostic: np.ndarray,
+	phase_labels: list[str],
+) -> Path:
+	"""保存所有 delay、所有 phase 及所有绘图派生谱为长表 CSV。"""
+	delays = np.asarray(delays_fs, dtype = float)
+	energy = np.asarray(energy_eV, dtype = float)
+	phase_cases = np.asarray(phase_stack, dtype = float)
+	expected_shape = (len(phase_labels), delays.size, energy.size)
+	if phase_cases.shape != expected_shape:
+		raise ValueError(f"phase_stack shape {phase_cases.shape} != {expected_shape}.")
+	for name, values in {
+		"phase_avg": phase_avg,
+		"phase_rms": phase_rms,
+		"phase_avg_unitnorm_diagnostic": phase_avg_unitnorm_diagnostic,
+	}.items():
+		if np.asarray(values).shape != (delays.size, energy.size):
+			raise ValueError(f"{name} has incompatible shape {np.asarray(values).shape}.")
+
+	rows: list[dict[str, Any]] = []
+	for delay_index, delay_fs in enumerate(delays):
+		for energy_index, photon_energy_eV in enumerate(energy):
+			row = {
+				"delay_index": int(delay_index),
+				"delay_fs": float(delay_fs),
+				"energy_index": int(energy_index),
+				"energy_eV": float(photon_energy_eV),
+				"wavelength_nm": float(HC_EV_NM / photon_energy_eV),
+				"TA_phase_avg": float(phase_avg[delay_index, energy_index]),
+				"TA_phase_rms": float(phase_rms[delay_index, energy_index]),
+				"TA_phase_avg_unitnorm_diagnostic": float(
+					phase_avg_unitnorm_diagnostic[delay_index, energy_index]
+				),
+			}
+			for phase_index, label in enumerate(phase_labels):
+				row[f"TA_phase_{label}"] = float(phase_cases[phase_index, delay_index, energy_index])
+			rows.append(row)
+	return write_csv_rows(path, rows)
 
 
 def safe_delay_label(delay_fs: float) -> str:
@@ -385,20 +432,7 @@ def make_physical_params(
 		dt_fs = float(config.dt_fs),
 		field = field,
 		basis = tuple(config.basis),
-		relaxation_channels = (
-			RelaxationChannel(
-				name = "relaxation_2_to_1",
-				from_level = 2,
-				to_level = 1,
-				T1_fs = float(config.T1_2_to_1_fs),
-			),
-			RelaxationChannel(
-				name = "relaxation_1_to_0",
-				from_level = 1,
-				to_level = 0,
-				T1_fs = float(config.T1_1_to_0_fs),
-			),
-		),
+
 		pure_dephasing_channels = (
 			PureDephasingChannel(
 				name = "pure_dephasing_level_1",
@@ -1599,6 +1633,16 @@ def run_demo(config: DemoConfig, *, output_dir: Path, quick: bool = False) -> di
 	# -----------------------------------------------------------------
 	# data save
 	# -----------------------------------------------------------------
+	all_delay_spectra_csv = write_all_delay_spectra_csv(
+		data_dir / "ta_all_delay_spectra.csv",
+		delays_fs = delays_array,
+		energy_eV = energy_eV,
+		phase_stack = phase_stack,
+		phase_avg = ta_phase_avg,
+		phase_rms = ta_phase_rms,
+		phase_avg_unitnorm_diagnostic = ta_phase_avg_unitnorm_diagnostic,
+		phase_labels = phase_names,
+	)
 	npz_path = data_dir / "ta_phase_cycling_comparison.npz"
 	np.savez_compressed(
 		npz_path,
@@ -1619,6 +1663,7 @@ def run_demo(config: DemoConfig, *, output_dir: Path, quick: bool = False) -> di
 		"quick": bool(quick),
 		"output_dir": output_dir,
 		"data_npz": npz_path,
+		"all_delay_spectra_csv": all_delay_spectra_csv,
 		"stats_csv": stats_csv,
 		"stats_json": stats_json,
 		"figures": figure_paths,
@@ -1672,6 +1717,7 @@ def run_demo(config: DemoConfig, *, output_dir: Path, quick: bool = False) -> di
 	print(f"energy points     : {energy_eV.size}")
 	print(f"output directory  : {output_dir}")
 	print(f"data npz          : {npz_path}")
+	print(f"all-delay spectra : {all_delay_spectra_csv}")
 	print(f"stats csv         : {stats_csv}")
 	print(f"metadata          : {meta_path}")
 	print(f"final phase avg   : {figure_paths['phase_avg_autoscale']}")
@@ -1680,6 +1726,7 @@ def run_demo(config: DemoConfig, *, output_dir: Path, quick: bool = False) -> di
 	return {
 		"output_dir": str(output_dir),
 		"data_npz": str(npz_path),
+		"all_delay_spectra_csv": str(all_delay_spectra_csv),
 		"stats_csv": str(stats_csv),
 		"stats_json": str(stats_json),
 		"meta_json": str(meta_path),
