@@ -3,6 +3,17 @@
 
 This script is example/scratch-level only. It does not modify the core solver,
 DynamicsResult, or IO layer, and it does not use piecewise/dark propagation.
+It is a phase-cycling TA validation script, not the bottom-level default TA
+framework. It does not use the experimental TA recipe v1 prototype under
+``qudpy_sjh/experiments/ta/``.
+
+The script intentionally contains upper-layer phase-cycling and report-output
+logic. A future migration should split this into:
+
+    generic pulse-sequence single-run scaffold
+    + generic phase cycler
+    + TA recipe
+    + phase-cycling result IO
 
 Main goals
 ----------

@@ -1,4 +1,4 @@
-"""Experiment-level scaffolds built on the stable QuDPy utilities."""
+"""Generic pulse-sequence scaffolds for one concrete field configuration."""
 
 from .pulse_sequence import (
     FieldGroupSpec,

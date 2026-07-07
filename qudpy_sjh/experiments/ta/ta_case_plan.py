@@ -1,5 +1,12 @@
 """Full-window TA delay-scan plans.
 
+这是 experimental TA recipe v1 prototype 的执行层，包含 pump/probe delay
+scan、probe-only reference、TA subtraction 和 TA output policy 等
+TA-specific 语义。它不是 generic pulse-sequence simulation framework，
+当前 phase-cycling validation demo 没有使用它，也不默认执行 phase
+cycling。phase cycling 应由上层 wrapper / generic cycler 负责；未来 TA
+recipe v2 可以逐步调用 generic pulse-sequence 基础层。
+
 This is the top-level TA orchestration layer.  It owns execution policy,
 checkpoint policy, and default standardized TA output policy.  It does not
 implement piecewise propagation, dark propagation, active/readout windows, or

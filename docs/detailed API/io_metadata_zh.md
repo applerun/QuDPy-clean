@@ -1,8 +1,7 @@
 # IO 与 Metadata 说明
 
-本文档说明当前 `qudpy_sjh.utils.io` 的普通 full-window `DynamicsResult` 输出逻辑和 metadata 边界。
-
-当前 IO 只应面向普通 `DynamicsResult`。不要在本层宣传 piecewise series、dark propagation 或 `materialize_full`。
+本文档说明 `qudpy_sjh.utils.io` 对单次 `DynamicsResult` 的数据导出、
+图像保存和 metadata 文件结构。
 
 ## 推荐导入
 
@@ -19,21 +18,13 @@ from qudpy_sjh.utils.io import (
 
 ## ResultLike
 
-当前 `ResultLike` 应理解为：
+`ResultLike` 在本模块中表示单次动力学结果：
 
 ```text
 DynamicsResult
 ```
 
-即普通单轨迹结果对象。
-
-不要写成支持：
-
-```text
-PieceDynamicsResultSeries
-piecewise series
-active/dark series
-```
+即一个完整时间轴上的 density-matrix trajectory。
 
 ## save_result_data
 
@@ -169,7 +160,7 @@ phase
 phase_unwrapped
 ```
 
-`components.csv` 不应保存：
+`components.csv` 不包含以下 spectroscopy / analysis 层结果：
 
 ```text
 dipole expectation
@@ -179,7 +170,7 @@ absorption response
 TA response
 ```
 
-这些属于 spectroscopy / analysis 层，应另存为单独分析文件。
+这些量由 spectroscopy / analysis 层生成，并保存为单独的分析文件。
 
 ## populations.csv
 
@@ -206,7 +197,7 @@ selected_elements={
 ## meta.json
 
 `meta.json` 是 human-facing v2 schema：它只保存去重后的人类可读摘要，
-优先使用 physical units。完整 raw/grouped 参数不应完整出现在
+优先使用 physical units。完整 raw/grouped 参数不会完整出现在
 `meta.json` 顶层；这类信息属于 `debug_meta.json` 或 raw serialization
 路径。
 
@@ -221,52 +212,54 @@ stats
 exports
 ```
 
-推荐结构：
+当前结构：
 
 ```text
-schema
-  name = "qudpy_result_metadata"
-  version = 2
+schema                         # metadata schema 标识
+  name                         # schema 名称，固定为 "qudpy_result_metadata"
+  version                      # schema 版本号，当前为 2
 
-identity
-  result_type
-  example_name
-  condition_name
-  case_name
-  mode
-  source_mode
-  user_notes
+identity                       # 结果身份信息与用户备注
+  result_type                  # result 对象类型，例如 "DynamicsResult"
+  example_name                 # 示例或工作流名称
+  condition_name               # 实验/扫描条件名称
+  case_name                    # 当前 case 名称
+  mode                         # result 表示模式，例如 "lab_exact"
+  source_mode                  # 派生 result 的来源模式；原始结果通常为 null
+  user_notes                   # 用户输入的说明与自定义 metadata
+    description                # 来自 NLevelPhysicalParams.input_description
+    metadata                   # 来自 NLevelPhysicalParams.input_metadata
 
-params
-  system
-    basis
-    dimension
-    energies_eV
-    dipole_matrix_D
-    dissipation
-      relaxation_channels
-      pure_dephasing_channels
-  field
-    class
-    expression
-    parameters
-    units
-    amplitude_convention
-    rebuildable
-    debug_details
-  solve
-    time_grid
-    solver
+params                         # 物理输入与求解配置摘要
+  system                       # matter system 定义
+    basis                      # basis state 名称
+    dimension                  # Hilbert space 维度
+    energies_eV                # 各能级能量，单位 eV
+    dipole_matrix_D            # optical polarization 投影后的偶极矩矩阵，单位 Debye
+    dissipation                # 开放系统通道
+      relaxation_channels      # population relaxation channels
+      pure_dephasing_channels  # pure dephasing channels
+  field                        # optical input field 摘要
+    class                      # field class 名称
+    expression                 # 场表达式说明
+    parameters                 # 场参数，例如 E0、omega、phase、envelope
+    units                      # field/time 单位
+    amplitude_convention       # 场幅值约定
+    rebuildable                # field payload 是否可重建
+    debug_details              # 更完整 field 信息所在文件
+  solve                        # 求解配置与 solver 表示
+    time_grid                  # 物理时间网格摘要
+    solver                     # solver representation 摘要
 
-results
-  trajectory_summary
+results                        # 主要结果摘要
+  trajectory_summary           # populations/coherences/trace 等轨迹摘要
 
-stats
-  sanity_summary
+stats                          # 数值检查摘要
+  sanity_summary               # trace、Hermiticity 等 sanity checks
 
-exports
-  component_export
-  output_files
+exports                        # 导出文件说明
+  component_export             # components.csv 的列语义
+  output_files                 # 当前 case 写出的文件路径
 ```
 
 `identity.user_notes` 来自 `NLevelPhysicalParams.input_description` 和
@@ -277,7 +270,7 @@ optical input field 混淆。
 `params.system.dissipation` 下，而不是顶层 `dissipation` 或
 `params.dissipation`。
 
-`params.system` 不保存：
+`params.system` 未包含以下 system-field 关系或归一化派生诊断量：
 
 ```text
 transition_table
@@ -287,15 +280,15 @@ laser_energy_eV
 coupling_fs_inv
 ```
 
-这些是 system-field 关系或归一化派生诊断量，不是 matter system 自身的
-raw 参数；如果需要，应放入 `debug_meta.json` 或未来单独设计的
-diagnostics / light_matter block。
+这些量不是 matter system 自身的 raw 参数；更完整的诊断信息位于
+`debug_meta.json`，未来也可以由独立的 diagnostics / light_matter block
+表达。
 
-`params.field` 只描述 optical input field，不应混入 matter system 信息。
-`field.parameters.envelope` 应为 `"constant"`、`"gaussian"`、`"sech"` 等
+`params.field` 只描述 optical input field，不混入 matter system 信息。
+`field.parameters.envelope` 使用 `"constant"`、`"gaussian"`、`"sech"` 等
 简洁字符串，而不是 dict 或字符串化 dict。
 
-不应放入 `params.field` 的内容：
+`params.field` 未包含以下 matter system 信息：
 
 ```text
 dipole_matrix_D
@@ -307,8 +300,7 @@ user_metadata
 ```
 
 `params.solve.time_grid` 保存时间网格；`params.solve.solver` 保存 solver
-representation 摘要。不要在 `meta.json` 中重复保存
-`grouped_params["solve"]`。
+representation 摘要。`meta.json` 不重复保存完整的 `grouped_params["solve"]`。
 
 ## debug_meta.json
 
@@ -324,7 +316,7 @@ drive_expr
 sanity_checks
 ```
 
-它适合调试，不应作为面向普通读者的唯一 metadata。
+它适合调试；面向普通阅读和结果浏览时，优先查看 `meta.json`。
 
 ## results.csv
 
@@ -367,20 +359,3 @@ plotting 函数负责生成 figure；IO 只负责写文件。
 io = QuantumResultIO(outdir="outputs")
 io.save_case(result)
 ```
-
-当前它仍应只处理普通 `DynamicsResult`。
-
-## 不支持的旧输出边界
-
-当前文档不应写：
-
-```text
-save_result_case supports PieceDynamicsResultSeries
-save_result_case supports piecewise series
-materialize_full before saving
-dark materialization output
-active/dark output schema
-long-window piecewise benchmark output
-```
-
-如果未来需要这些能力，应新增独立 schema，并明确与普通 `DynamicsResult` 输出的边界。

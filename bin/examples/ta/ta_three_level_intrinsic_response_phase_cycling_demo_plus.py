@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Add-on outputs for the TA phase-cycling demo without modifying the base file.
 
+This add-on is still demo/report-level code. It is not a generic
+pulse-sequence framework and does not connect the experimental TA recipe v1
+prototype under ``qudpy_sjh/experiments/ta/``.
+
 Place this file next to:
 
     ta_three_level_intrinsic_response_phase_cycling_demo.py

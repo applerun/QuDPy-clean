@@ -1,2 +1,1 @@
-"""Tests for experiment-level scaffolds."""
-
+"""Experiment scaffold tests."""

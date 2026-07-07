@@ -1,4 +1,11 @@
-"""Standardized TA result objects and default TA outputs."""
+"""Standardized TA result objects and default TA outputs.
+
+这是 experimental TA recipe v1 prototype 的结果与 IO 层，保存
+TA-specific spectrum、delay map、probe-only reference 和默认 TA 输出。
+它不是 generic pulse-sequence result framework，当前 phase-cycling
+validation demo 没有使用它，也不默认输出 phase_avg / phase_rms。
+phase-cycling result IO 应由后续上层 recipe/cycler 单独设计。
+"""
 
 from __future__ import annotations
 

@@ -1,5 +1,12 @@
 """TA workflow settings.
 
+这是 experimental TA recipe v1 prototype，包含 pump/probe、probe-only
+reference 和 TA map 等 TA-specific 语义。它不是 generic pulse-sequence
+simulation framework，当前 phase-cycling validation demo 也没有使用它。
+本 prototype 不默认执行 phase cycling；phase cycling 应由上层 wrapper /
+generic cycler 负责。未来 TA recipe v2 可以调用 generic pulse-sequence /
+phase-cycling 基础层，但本轮不迁移。
+
 ``TASettings`` is the pure calculation definition for an intrinsic transient
 absorption workflow.  It intentionally does not contain output directories,
 checkpoint paths, preview plotting flags, or core result export policies.

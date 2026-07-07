@@ -53,7 +53,18 @@ class CarrierEnvelopeField(FieldPhyRoot):
     def normalization_rate_candidates_fs_inv(self) -> tuple[float, ...]:
         return tuple(self.envelope.normalization_rate_candidates_fs_inv)
 
-    def physical_E_MV_per_cm(self, t_fs: np.ndarray) -> np.ndarray:
+    def positive_frequency_E_MV_per_cm(self, t_fs: np.ndarray) -> np.ndarray:
+        """返回正频复场，单位 MV/cm。
+
+        约定为：
+
+            E_positive(t) = E0 * f(t) * exp(i * [omega*(t-center) + phase])
+
+        因此 real lab-frame field 满足：
+
+            E_real(t) = 2 * Re[E_positive(t)]
+        """
+
         t = np.asarray(t_fs, dtype=float)
         envelope = np.asarray(self.envelope.value(t), dtype=float)
         if envelope.shape != t.shape:
@@ -62,7 +73,10 @@ class CarrierEnvelopeField(FieldPhyRoot):
                 f"got {envelope.shape}, expected {t.shape}."
             )
         phase = self.carrier.phase(t, center_fs=float(self.envelope.center_fs))
-        return 2.0 * float(self.E0_MV_per_cm) * envelope * np.cos(phase)
+        return float(self.E0_MV_per_cm) * envelope * np.exp(1j * phase)
+
+    def physical_E_MV_per_cm(self, t_fs: np.ndarray) -> np.ndarray:
+        return 2.0 * np.real(self.positive_frequency_E_MV_per_cm(t_fs))
 
     def __repr__(self) -> str:
         return (
@@ -70,6 +84,69 @@ class CarrierEnvelopeField(FieldPhyRoot):
             f"E0_MV_per_cm={self.E0_MV_per_cm!r}, "
             f"carrier={self.carrier!r}, "
             f"envelope={self.envelope!r})"
+        )
+
+    def with_phase(
+        self,
+        phase_rad: float,
+        *,
+        name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "CarrierEnvelopeField":
+        """返回 absolute carrier phase 被设为 ``phase_rad`` 的新 field。
+
+        该方法作用于正频复场相位：
+
+            E_positive(t; phi) = exp(i * phi) * E_positive(t; 0)
+
+        对 real field，`physical_E_MV_per_cm` 由新的正频复场取实部得到。
+        """
+
+        phase = float(phase_rad)
+        if not np.isfinite(phase):
+            raise ValueError("phase_rad must be finite.")
+        new_metadata = _metadata_copy(self.metadata)
+        new_metadata.update(_metadata_copy(metadata))
+        new_metadata.update(
+            {
+                "phase_override_applied": True,
+                "phase_override_type": "absolute",
+                "previous_phase_rad": float(self.carrier.phase_rad),
+                "phase_rad": phase,
+            }
+        )
+        return CarrierEnvelopeField(
+            E0_MV_per_cm=float(self.E0_MV_per_cm),
+            carrier=CarrierSpec(
+                omega_fs_inv=float(self.carrier.omega_fs_inv),
+                phase_rad=phase,
+                label=self.carrier.label,
+                metadata=_metadata_copy(self.carrier.metadata),
+            ),
+            envelope=self.envelope,
+            name=name or self.name,
+            metadata=new_metadata,
+        )
+
+    def phase_shifted(
+        self,
+        delta_phase_rad: float,
+        *,
+        name: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> "CarrierEnvelopeField":
+        """返回 carrier phase 增加 ``delta_phase_rad`` 的新 field。"""
+
+        delta = float(delta_phase_rad)
+        if not np.isfinite(delta):
+            raise ValueError("delta_phase_rad must be finite.")
+        return self.with_phase(
+            float(self.carrier.phase_rad) + delta,
+            name=name,
+            metadata={
+                "phase_shift_delta_rad": delta,
+                **_metadata_copy(metadata),
+            },
         )
 
     def time_shifted(
