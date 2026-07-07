@@ -58,6 +58,7 @@ from qudpy_sjh.utils.core import (
 	RelaxationChannel,
 	run_case,
 )
+from qudpy_sjh.utils.constants import HC_EV_NM
 from qudpy_sjh.utils.fields import FieldPhySeries
 from qudpy_sjh.utils.fields.carrier_envelope import (
 	make_gaussian_carrier_envelope_field,
@@ -69,7 +70,6 @@ from qudpy_sjh.utils.spectroscopy import (
 
 EXAMPLE_NAME = "ta_three_level_intrinsic_response_phase_cycling_demo_no_relaxation"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "outputs" / EXAMPLE_NAME
-HC_EV_NM = 1239.8419843320026
 
 
 @dataclass(frozen = True)

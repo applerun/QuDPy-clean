@@ -29,15 +29,8 @@ def _complex_matrix_to_json(value: Any) -> list:
 def _json_safe(value: Any) -> Any:
     if type(value).__name__ == "ParaNormalizer":
         return {"class": "ParaNormalizer", "note": "runtime object omitted from JSON metadata"}
-    if type(value).__name__ == "NLevelPhysicalParams":
-        payload = {
-            item.name: getattr(value, item.name)
-            for item in dataclass_fields(value)
-            if item.name != "field"
-        }
-        field_value = getattr(value, "field", None)
-        payload["field"] = None if field_value is None else _json_safe(field_value)
-        return _json_safe(payload)
+    if hasattr(value, "grouped_params") and type(value).__name__ == "NLevelPhysicalParams":
+        return _json_safe(value.grouped_params)
     if hasattr(value, "to_dict") and callable(value.to_dict):
         return _json_safe(value.to_dict())
     if is_dataclass(value):

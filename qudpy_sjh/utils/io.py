@@ -16,16 +16,15 @@ import numpy as np
 
 from qudpy_sjh.utils.core.results import DynamicsResult
 
-
 ResultLike = DynamicsResult
-
-HC_EV_NM = 1239.8419843320026
 
 
 def _json_safe(value: Any) -> Any:
     if type(value).__name__ == "ParaNormalizer":
         return {"class": "ParaNormalizer", "note": "runtime object omitted from JSON metadata"}
     if type(value).__name__ == "NLevelPhysicalParams":
+        if hasattr(value, "grouped_params"):
+            return _json_safe(value.grouped_params)
         payload = {
             item.name: getattr(value, item.name)
             for item in dataclass_fields(value)
@@ -69,6 +68,17 @@ def _physical_field_payload(physical: Any) -> dict[str, Any] | None:
     if not isinstance(payload, dict):
         raise TypeError("field.to_dict() must return a dict.")
     return _json_safe(payload)
+
+
+def _physical_grouped_params(physical: Any) -> dict[str, Any] | None:
+    if physical is None:
+        return None
+    if not hasattr(physical, "grouped_params"):
+        raise TypeError("physical_params must expose grouped_params for metadata export.")
+    grouped = physical.grouped_params
+    if not isinstance(grouped, dict):
+        raise TypeError("NLevelPhysicalParams.grouped_params must return a dict.")
+    return grouped
 
 
 def _field_metadata_value(physical: Any, key: str) -> Any:
@@ -283,67 +293,17 @@ def _channel_with_rate(channel: Any, solver_channels: tuple[dict[str, Any], ...]
     return data
 
 
-def _transition_table(physical: Any, solver: Any) -> list[dict[str, Any]]:
-    if physical is None:
-        return []
-    energies_eV = np.asarray(getattr(physical, "energies_eV", ()), dtype=float)
-    dipole_matrix = np.asarray(getattr(physical, "dipole_matrix_D", ()), dtype=np.complex128)
-    n = int(len(energies_eV))
-    table: list[dict[str, Any]] = []
-    energies_fs_inv = None if solver is None else np.asarray(getattr(solver, "energies_fs_inv", ()), dtype=float)
-    coupling_fs_inv = None if solver is None else np.asarray(getattr(solver, "coupling_matrix_fs_inv", ()), dtype=np.complex128)
-    omega_L_fs_inv = None if solver is None else getattr(solver, "omega_L_fs_inv", None)
-    laser_energy_eV = _field_laser_energy_eV(physical, solver)
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            energy_eV = float(energies_eV[j] - energies_eV[i])
-            omega_fs_inv = None
-            if energies_fs_inv is not None and energies_fs_inv.shape[0] > j:
-                omega_fs_inv = float(energies_fs_inv[j] - energies_fs_inv[i])
-            detuning_eV = None if laser_energy_eV is None else float(energy_eV - float(laser_energy_eV))
-            detuning_fs_inv = None
-            if omega_fs_inv is not None and omega_L_fs_inv is not None:
-                detuning_fs_inv = float(omega_fs_inv - float(omega_L_fs_inv))
-            dipole_D = None
-            coupling = None
-            if dipole_matrix.shape == (n, n):
-                dipole_D = dipole_matrix[i, j]
-            if coupling_fs_inv is not None and coupling_fs_inv.shape == (n, n):
-                coupling = coupling_fs_inv[i, j]
-            table.append(
-                {
-                    "from": i,
-                    "to": j,
-                    "label": f"{i}_to_{j}",
-                    "energy_eV": energy_eV,
-                    "omega_fs_inv": omega_fs_inv,
-                    "laser_energy_eV": laser_energy_eV,
-                    "detuning_eV": detuning_eV,
-                    "detuning_fs_inv": detuning_fs_inv,
-                    "dipole_D": dipole_D,
-                    "coupling_fs_inv": coupling,
-                    "dipole_coupled": bool(dipole_D is not None and abs(dipole_D) > 0),
-                }
-            )
-    return table
-
-
-def _system_metadata(physical: Any, solver: Any, result: ResultLike) -> dict[str, Any] | None:
+def _system_metadata(physical: Any, result: ResultLike) -> dict[str, Any] | None:
     if physical is None:
         return None
-    system = {
-        "basis": physical.basis,
+    grouped = _physical_grouped_params(physical)
+    system_params = grouped["system"]
+    return {
+        "basis": system_params["basis"],
         "dimension": result.dimension(),
-        "energies_eV": physical.energies_eV,
-        "dipole_matrix_D": physical.dipole_matrix_D,
-        "transition_table": _transition_table(physical, solver),
+        "energies_eV": system_params["energies_eV"],
+        "dipole_matrix_D": system_params["dipole_matrix_D"],
     }
-    if result.dimension() == 2:
-        system["energy_gap_eV"] = physical.energy_gap_eV
-        laser_energy_eV = _field_laser_energy_eV(physical, solver)
-        system["detuning_eV"] = None if laser_energy_eV is None else physical.energy_gap_eV - laser_energy_eV
-    return system
 
 
 def _field_metadata(result: ResultLike, physical: Any, solver: Any) -> dict[str, Any] | None:
@@ -381,16 +341,17 @@ def _field_metadata(result: ResultLike, physical: Any, solver: Any) -> dict[str,
 def _dissipation_metadata(physical: Any, solver: Any) -> dict[str, Any] | None:
     if physical is None:
         return None
+    system_params = _physical_grouped_params(physical)["system"]
     relaxation_solver = () if solver is None else solver.relaxation_channels_fs_inv
     dephasing_solver = () if solver is None else solver.pure_dephasing_channels_fs_inv
     return {
         "relaxation_channels": [
             _channel_with_rate(channel, relaxation_solver)
-            for channel in getattr(physical, "relaxation_channels", ())
+            for channel in system_params["relaxation_channels"]
         ],
         "pure_dephasing_channels": [
             _channel_with_rate(channel, dephasing_solver)
-            for channel in getattr(physical, "pure_dephasing_channels", ())
+            for channel in system_params["pure_dephasing_channels"]
         ],
     }
 
@@ -398,9 +359,10 @@ def _dissipation_metadata(physical: Any, solver: Any) -> dict[str, Any] | None:
 def _time_grid_metadata(result: ResultLike, physical: Any) -> dict[str, Any]:
     times = result.times_fs if result.times_fs is not None else result.times
     if physical is not None:
-        t_start = physical.t_start_fs
-        t_end = physical.t_end_fs
-        dt = physical.dt_fs
+        solve_params = _physical_grouped_params(physical)["solve"]
+        t_start = solve_params["t_start_fs"]
+        t_end = solve_params["t_end_fs"]
+        dt = solve_params["dt_fs"]
     elif len(times):
         t_start = float(times[0])
         t_end = float(times[-1])
@@ -440,7 +402,17 @@ def _sanity_summary(result: ResultLike) -> dict[str, Any]:
 
 def _field_envelope(physical: Any) -> str:
     envelope = _field_metadata_value(physical, "envelope")
-    return "unknown" if envelope is None else str(envelope)
+    if envelope is None:
+        return "unknown"
+    if isinstance(envelope, dict):
+        envelope_class = envelope.get("class")
+        if envelope_class == "GaussianEnvelopeSpec":
+            return "gaussian"
+        if envelope_class == "SechEnvelopeSpec":
+            return "sech"
+        if envelope_class == "ConstantEnvelopeSpec":
+            return "constant"
+    return str(envelope)
 
 
 def _field_rebuild_metadata(result: ResultLike, physical: Any) -> dict[str, Any] | None:
@@ -584,6 +556,7 @@ def _clean_debug_field_metadata(value: Any) -> Any:
 def _input_field_metadata(physical: Any, solver: Any) -> dict[str, Any] | None:
     if physical is None:
         return None
+    input_params = _physical_grouped_params(physical)["input"]
     envelope = _field_envelope(physical)
     field_metadata = _physical_field_payload(physical)
     if field_metadata is not None:
@@ -607,10 +580,10 @@ def _input_field_metadata(physical: Any, solver: Any) -> dict[str, Any] | None:
         "time_unit": "fs",
         "amplitude_convention": "E0_MV_per_cm is E0 in E(t) = 2 E0 f(t) cos(omega_L t + phase).",
     }
-    if getattr(physical, "input_description", None) is not None:
-        data["user_description"] = physical.input_description
-    if getattr(physical, "input_metadata", None) is not None:
-        data["user_metadata"] = dict(physical.input_metadata)
+    if input_params["input_description"] is not None:
+        data["user_description"] = input_params["input_description"]
+    if input_params["input_metadata"] is not None:
+        data["user_metadata"] = dict(input_params["input_metadata"])
     if field_metadata is not None:
         data["field_metadata"] = field_metadata
     if envelope == "gaussian":
@@ -747,37 +720,63 @@ def _human_metadata(
 ) -> dict[str, Any]:
     physical = getattr(result, "physical_params", None)
     solver = getattr(result, "solver_params", None)
-    meta: dict[str, Any] = {
-        "result_type": type(result).__name__,
-        "example_name": example_name,
-        "condition_name": condition_name,
-        "case_name": case_name,
-        "mode": getattr(result, "mode", None),
-        "source_mode": getattr(result, "source_mode", None),
-    }
 
-    if physical is not None:
-        meta["user_input"] = {
-            "description": physical.input_description,
-            "metadata": physical.input_metadata,
+    grouped = _physical_grouped_params(physical)
+    if grouped is not None:
+        input_params = grouped["input"]
+        user_notes = {
+            "description": input_params["input_description"],
+            "metadata": input_params["input_metadata"],
         }
     else:
-        meta["user_input"] = None
+        user_notes = {
+            "description": None,
+            "metadata": None,
+        }
 
-    meta["system"] = _system_metadata(physical, solver, result)
-    meta["field"] = _field_metadata(result, physical, solver)
-    meta["dissipation"] = _dissipation_metadata(physical, solver)
-    meta["time_grid"] = _time_grid_metadata(result, physical)
-    meta["solver"] = _solver_metadata(result)
+    system = _system_metadata(physical, result)
+    if system is not None:
+        system["dissipation"] = _dissipation_metadata(physical, solver)
+
+    solve: dict[str, Any] = {
+        "time_grid": _time_grid_metadata(result, physical),
+        "solver": _solver_metadata(result),
+    }
     if getattr(result, "mode", None) == "rotating_view":
-        meta["rotating_transform"] = _rotating_transform_metadata(result, solver)
+        solve["rotating_transform"] = _rotating_transform_metadata(result, solver)
     if getattr(result, "mode", None) == "rwa":
-        meta["input_drive"] = _input_drive_metadata(result, physical, solver, getattr(result, "parameters", None))
+        solve["input_drive"] = _input_drive_metadata(result, physical, solver, getattr(result, "parameters", None))
 
-    meta["trajectory_summary"] = _trajectory_summary(result)
-    meta["sanity_summary"] = _sanity_summary(result)
-    meta["component_export"] = _component_export_metadata(result)
-    meta["output_files"] = output_files or {}
+    meta: dict[str, Any] = {
+        "schema": {
+            "name": "qudpy_result_metadata",
+            "version": 2,
+        },
+        "identity": {
+            "result_type": type(result).__name__,
+            "example_name": example_name,
+            "condition_name": condition_name,
+            "case_name": case_name,
+            "mode": getattr(result, "mode", None),
+            "source_mode": getattr(result, "source_mode", None),
+            "user_notes": user_notes,
+        },
+        "params": {
+            "system": system,
+            "field": _field_metadata(result, physical, solver),
+            "solve": solve,
+        },
+        "results": {
+            "trajectory_summary": _trajectory_summary(result),
+        },
+        "stats": {
+            "sanity_summary": _sanity_summary(result),
+        },
+        "exports": {
+            "component_export": _component_export_metadata(result),
+            "output_files": output_files or {},
+        },
+    }
     return _json_safe(meta)
 
 

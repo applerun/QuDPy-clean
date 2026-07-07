@@ -8,10 +8,7 @@ from typing import Any
 
 import numpy as np
 
-HBAR_J_S = 1.054571817e-34
-E_CHARGE_C = 1.602176634e-19
-FS_TO_S = 1e-15
-EV_TO_FS_INV = (E_CHARGE_C / HBAR_J_S) * FS_TO_S
+from qudpy_sjh.utils.constants import E_CHARGE_C, EV_TO_FS_INV, FS_TO_S, HBAR_J_S
 
 
 def _metadata_copy(metadata: dict[str, Any] | None) -> dict[str, Any]:

@@ -205,49 +205,110 @@ selected_elements={
 
 ## meta.json
 
-`meta.json` 是人类可读的紧凑 metadata，优先使用 physical units。
+`meta.json` 是 human-facing v2 schema：它只保存去重后的人类可读摘要，
+优先使用 physical units。完整 raw/grouped 参数不应完整出现在
+`meta.json` 顶层；这类信息属于 `debug_meta.json` 或 raw serialization
+路径。
 
-推荐顶层 block：
+顶层 block 固定为：
 
 ```text
-result_type
-example_name
-condition_name
-case_name
-mode
-source_mode
-user_input
-system
-field
-dissipation
-time_grid
-solver
-trajectory_summary
-sanity_summary
-component_export
-output_files
+schema
+identity
+params
+results
+stats
+exports
 ```
 
-`field` block 只描述 optical input field，不应混入 matter system 信息。
+推荐结构：
 
-不应放入 `field` block 的内容：
+```text
+schema
+  name = "qudpy_result_metadata"
+  version = 2
+
+identity
+  result_type
+  example_name
+  condition_name
+  case_name
+  mode
+  source_mode
+  user_notes
+
+params
+  system
+    basis
+    dimension
+    energies_eV
+    dipole_matrix_D
+    dissipation
+      relaxation_channels
+      pure_dephasing_channels
+  field
+    class
+    expression
+    parameters
+    units
+    amplitude_convention
+    rebuildable
+    debug_details
+  solve
+    time_grid
+    solver
+
+results
+  trajectory_summary
+
+stats
+  sanity_summary
+
+exports
+  component_export
+  output_files
+```
+
+`identity.user_notes` 来自 `NLevelPhysicalParams.input_description` 和
+`NLevelPhysicalParams.input_metadata`。这里命名为 `user_notes`，避免和
+optical input field 混淆。
+
+`params.system` 只描述 matter system。开放系统通道必须放在
+`params.system.dissipation` 下，而不是顶层 `dissipation` 或
+`params.dissipation`。
+
+`params.system` 不保存：
+
+```text
+transition_table
+detuning_eV
+detuning_fs_inv
+laser_energy_eV
+coupling_fs_inv
+```
+
+这些是 system-field 关系或归一化派生诊断量，不是 matter system 自身的
+raw 参数；如果需要，应放入 `debug_meta.json` 或未来单独设计的
+diagnostics / light_matter block。
+
+`params.field` 只描述 optical input field，不应混入 matter system 信息。
+`field.parameters.envelope` 应为 `"constant"`、`"gaussian"`、`"sech"` 等
+简洁字符串，而不是 dict 或字符串化 dict。
+
+不应放入 `params.field` 的内容：
 
 ```text
 dipole_matrix_D
-transitions_eV
+energies_eV
 transition_table
 relaxation_channels
 pure_dephasing_channels
 user_metadata
 ```
 
-这些应分别放入：
-
-```text
-system
-dissipation
-user_input
-```
+`params.solve.time_grid` 保存时间网格；`params.solve.solver` 保存 solver
+representation 摘要。不要在 `meta.json` 中重复保存
+`grouped_params["solve"]`。
 
 ## debug_meta.json
 

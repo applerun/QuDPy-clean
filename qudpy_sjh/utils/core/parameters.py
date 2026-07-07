@@ -134,7 +134,44 @@ class NLevelPhysicalParams:
 		if self.dimension < 2:
 			raise ValueError("energy_gap_eV requires at least two levels.")
 		return float(self.energies_eV[1] - self.energies_eV[0])
+	@property
+	def system_params(self) -> dict[str, Any]:
+		"""用户侧物质体系定义，不包含外场和求解网格。"""
+		return {
+			"basis": self.basis,
+			"energies_eV": self.energies_eV,
+			"dipole_matrix_D": self.dipole_matrix_D,
+			"relaxation_channels": self.relaxation_channels,
+			"pure_dephasing_channels": self.pure_dephasing_channels,
+		}
 
+	@property
+	def input_params(self) -> dict[str, Any]:
+		"""用户侧外部输入定义。"""
+		return {
+			"field": self.field,
+			"input_description": self.input_description,
+			"input_metadata": self.input_metadata,
+		}
+
+	@property
+	def solve_params(self) -> dict[str, Any]:
+		"""归一化前的用户侧求解配置。"""
+		return {
+			"t_start_fs": self.t_start_fs,
+			"t_end_fs": self.t_end_fs,
+			"dt_fs": self.dt_fs,
+			"solver_mode": self.solver_mode,
+		}
+
+	@property
+	def grouped_params(self) -> dict[str, Any]:
+		"""按 system / input / solve 分组的用户侧物理输入。"""
+		return {
+			"system": self.system_params,
+			"input": self.input_params,
+			"solve": self.solve_params,
+		}
 
 @dataclass
 class SolverParams:

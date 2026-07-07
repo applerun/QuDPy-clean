@@ -5,7 +5,6 @@ Hamiltonian，也不生成 collapse operator。
 """
 from __future__ import annotations
 import warnings
-from dataclasses import asdict, fields as dataclass_fields
 from typing import Any, Optional
 
 import numpy as np
@@ -335,14 +334,8 @@ class ParaNormalizer:
         s = solver if solver is not None else self.last_solver
         if p is None or s is None:
             raise RuntimeError("没有可用的 physical / solver 参数。")
-        physical_payload = {
-            item.name: getattr(p, item.name)
-            for item in dataclass_fields(p)
-            if item.name != "field"
-        }
-        physical_payload["field"] = None if p.field is None else p.field.to_dict()
         return {
-            "physical": physical_payload,
+            "physical": p.grouped_params,
             "conversion_constants": {
                 "EV_TO_FS_INV": self.EV_TO_FS_INV,
                 "DIPOLE_FIELD_TO_RABI_FS_INV": self.DIPOLE_FIELD_TO_RABI_FS_INV,

@@ -13,7 +13,8 @@ from .absorption_spectra import (
     rwa_fft_response,
     safe_complex_ratio,
 )
-from .theory import EPSILON0_F_PER_M, chi_two_level_linear, gamma2_fs_inv_from_T1_Tphi
+from qudpy_sjh.utils.constants import DEBYE_TO_C_M, EPSILON0_F_PER_M
+from .theory import chi_two_level_linear, gamma2_fs_inv_from_T1_Tphi
 
 __all__ = [
     "DEBYE_TO_C_M",

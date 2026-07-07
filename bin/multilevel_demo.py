@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 if __package__ is None or __package__ == "":
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qudpy_sjh.utils.core import (
     NLevelPhysicalParams,
@@ -23,7 +23,7 @@ from qudpy_sjh.utils.core import (
     RelaxationChannel,
     run_case,
 )
-from qudpy_sjh.utils.fields import make_default_carrier_field
+from qudpy_sjh.utils.fields.carrier_envelope import make_constant_carrier_envelope_field
 from qudpy_sjh.utils.io import (
     QuantumResultIO,
     save_figure,
@@ -66,9 +66,10 @@ def make_demo_params() -> NLevelPhysicalParams:
         t_start_fs=0.0,
         t_end_fs=120.0,
         dt_fs=0.05,
-        field=make_default_carrier_field(
+        field=make_constant_carrier_envelope_field(
             E0_MV_per_cm=field_MV_per_cm,
             laser_energy_eV=float(ParaNormalizer.fs_inv_to_energy_eV(1.0)),
+            name="multilevel_demo_constant_field",
         ),
         relaxation_channels=(
             RelaxationChannel(name="relaxation_2_to_1", from_level=2, to_level=1, rate_fs_inv=0.02),

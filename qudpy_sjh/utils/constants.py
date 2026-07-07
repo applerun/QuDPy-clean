@@ -32,6 +32,7 @@ EV_TO_FS_INV = (E_CHARGE_C / HBAR_J_S) * FS_TO_S
 DIPOLE_FIELD_TO_RABI_FS_INV = (
     DEBYE_TO_C_M * MV_PER_CM_TO_V_PER_M / HBAR_J_S
 ) * FS_TO_S
+HC_EV_NM = H_PLANCK * C_LIGHT / E_CHARGE_C * 1.0e9
 
 __all__ = [
     "C_LIGHT",
@@ -45,4 +46,5 @@ __all__ = [
     "MV_PER_CM_TO_V_PER_M",
     "EV_TO_FS_INV",
     "DIPOLE_FIELD_TO_RABI_FS_INV",
+    "HC_EV_NM",
 ]

@@ -34,6 +34,7 @@ from qudpy_sjh.utils.core import (
 	RelaxationChannel,
 	run_case,
 )
+from qudpy_sjh.utils.constants import HC_EV_NM
 from qudpy_sjh.utils.fields import FieldPhySeries
 from qudpy_sjh.utils.fields.carrier_envelope import make_gaussian_carrier_envelope_field
 from qudpy_sjh.utils.spectroscopy import polarization_C_per_m2
@@ -44,7 +45,6 @@ DEFAULT_OUTPUT_DIR = (
 	Path(__file__).resolve().parents[3]
 	/ "outputs/examples/ta/four_level_readout_comparison_delay500fs"
 )
-HC_EV_NM = 1239.8419843320026
 EPS = 1.0e-30
 
 
