@@ -2,7 +2,9 @@
 
 本文档描述 QuDPy 中 TA / multi-pulse / phase-cycling 的长期分层架构。
 当前已经建立通用 multi-pulse single-run scaffold，并在 Milestone 2 中
-为 `CarrierEnvelopeField` 增加正式 field-level phase override API。完整
+为 `CarrierEnvelopeField` 增加正式 field-level phase override API。
+Milestone 3 已新增 generic `SingleRunPlan / ReadoutSpec`，用于把一次
+concrete pulse sequence 接入 `run_case` 并执行可选通用 readout。完整
 phase cycler 和具体实验 recipe 仍属于后续阶段。
 
 ## 总体原则
@@ -201,6 +203,7 @@ readout/output 层，不属于 bottom-level pulse sequence。
 qudpy_sjh/experiments/pulse_sequence/
   __init__.py
   pulse_sequence.py
+  single_run.py
 ```
 
 主要 API：
@@ -215,6 +218,12 @@ PulseSpec
 FieldGroupSpec
 PulseSequenceSpec
 SingleRunFieldPlan
+ReadoutSpec
+SingleRunReadoutResult
+SingleRunCheckpointSettings
+SingleRunPlan
+SingleRunResult
+compute_single_run_readout
 ```
 
 这些 API 不依赖 TA / 2DES / solver / matplotlib，只负责构造一次 concrete
@@ -257,6 +266,57 @@ phase_override_note
 phase override，避免 phase-cycling workflow 中不同 phase run 的真实
 waveform 完全相同却被误认为已经投影。
 
+## Milestone 3：generic SingleRunPlan / ReadoutSpec
+
+当前 `single_run.py` 提供一个实验无关的 single-run 执行层：
+
+```text
+SingleRunFieldPlan
+-> build concrete FieldPhySeries
+-> replace(base_params, field=field)
+-> run_case
+-> optional generic readout
+-> SingleRunResult
+```
+
+`SingleRunPlan` 只替换 `NLevelPhysicalParams.field` 以及用户记录用的
+`input_description / input_metadata`。它不改变 matter system、time grid、
+solver mode、relaxation、pure dephasing、normalization 或 solver 行为。
+
+`input_metadata["single_run_workflow"]` 记录本次 single-run 的
+`case_name`、`field_plan`、`readout`、`phase_vector` 和 `centers_fs`，
+用于后续 recipe / cycler 追踪一次具体 field configuration。
+
+`ReadoutSpec` 当前支持三种模式：
+
+- `mode="none"`：不执行 readout，`SingleRunResult.readout` 为 `None`；
+- `mode="polarization"`：计算宏观 `polarization_C_per_m2(t)`；
+- `mode="absorption"`：计算 polarization，并使用指定 readout field 作为
+  denominator 调用 `lab_frame_absorption_response`。
+
+`readout_field_name=None` 表示使用 total field；非空字符串表示从
+`FieldPhySeries` 中按名称选择 subfield，例如未来 TA recipe 可以选择
+`readout_field_name="probe"`。generic single-run 层不把 `"probe"` 作为
+默认值，也不假设 probe-only / pump-probe reference 存在。
+
+当前 absorption-like readout 只输出通用谱响应：
+
+```text
+polarization_C_per_m2
+readout_field_MV_per_cm
+lab_frame_absorption_response(...)
+```
+
+它不计算：
+
+- `S_TA = S_pump_probe - S_probe_only`；
+- phase average；
+- phase grid；
+- Fourier projection；
+- 2DES spectrum。
+
+这些操作属于后续 Layer 2 / Layer 3。
+
 ## Migration plan
 
 ### Milestone 1：已完成
@@ -278,11 +338,14 @@ waveform 完全相同却被误认为已经投影。
 - 支持任意 pulse sequence 生成带真实 phase override 的 `FieldPhySeries`；
 - 没有改变 solver。
 
-### Milestone 3：generic single-run plan 与 readout
+### Milestone 3：已完成低风险 generic single-run plan 与 readout
 
-- 实现 generic `SingleRunPlan / ReadoutSpec`；
-- 标准化一次 propagation + readout；
-- TA recipe v2 逐步调用 generic single-run。
+- 已实现 generic `SingleRunPlan / ReadoutSpec`；
+- 已标准化一次 concrete field propagation + 可选 readout；
+- 已支持 no readout、polarization readout、absorption-like spectral readout；
+- 已保留 `readout_field_name` 接口，供后续 TA / 2DES recipe 指定 total
+  field 或 named subfield；
+- 未实现 phase grid、Fourier projection、TA subtraction 或 2DES readout。
 
 ### Milestone 4：generic PhaseCycler runner
 
