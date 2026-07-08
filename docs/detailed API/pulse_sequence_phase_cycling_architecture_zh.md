@@ -4,8 +4,10 @@
 当前已经建立通用 multi-pulse single-run scaffold，并在 Milestone 2 中
 为 `CarrierEnvelopeField` 增加正式 field-level phase override API。
 Milestone 3 已新增 generic `SingleRunPlan / ReadoutSpec`，用于把一次
-concrete pulse sequence 接入 `run_case` 并执行可选通用 readout。完整
-phase cycler 和具体实验 recipe 仍属于后续阶段。
+concrete pulse sequence 接入 `run_case` 并执行可选通用 readout。
+Milestone 4 已新增 generic `PhaseGrid / PhaseCyclingPlan`，用于对任意
+`SingleRunPlan` 执行 phase grid 并按 `target_phase_vector` 做 Fourier
+projection。具体 TA / 2DES experiment recipe 仍属于后续阶段。
 
 ## 总体原则
 
@@ -44,7 +46,7 @@ field group 构造成一次可传给 `NLevelPhysicalParams.field` 的
 
 ### Layer 2: generic phase cycler
 
-Layer 2 是后续 milestone。它建立在 Layer 1 的 phase metadata 上：
+Layer 2 建立在 Layer 1 的 phase metadata 上：
 
 ```text
 collect phase_tags
@@ -54,9 +56,9 @@ collect phase_tags
 -> Fourier projection by target_phase_vector
 ```
 
-cycler 不应写死 TA 或 2DES。它只根据 `phase_tags`、
-`target_phase_vector` 和 phase grid 做重复 single-run 与 Fourier
-projection。
+generic cycler 不写死 TA 或 2DES。它只根据 `phase_tags`、
+`target_phase_vector` 和 phase grid 重复调用 `SingleRunPlan`，提取指定
+readout array，并做 Fourier projection。
 
 ### Layer 3: experiment recipes
 
@@ -186,7 +188,13 @@ readout/output 层，不属于 bottom-level pulse sequence。
 
 当前阶段不实现：
 
-- 完整 `PhaseCycler` runner；
+- TA recipe v2；
+- TA subtraction；
+- probe-only / pump-probe orchestration；
+- 2DES recipe；
+- rephasing / non-rephasing / double-quantum recipe；
+- 2D Fourier transform；
+- phase-case checkpoint path builder；
 - piecewise / dark propagation；
 - `materialize_full`；
 - `DynamicsResult` 重写；
@@ -202,6 +210,7 @@ readout/output 层，不属于 bottom-level pulse sequence。
 ```text
 qudpy_sjh/experiments/pulse_sequence/
   __init__.py
+  phase_cycling.py
   pulse_sequence.py
   single_run.py
 ```
@@ -224,6 +233,16 @@ SingleRunCheckpointSettings
 SingleRunPlan
 SingleRunResult
 compute_single_run_readout
+PhaseGrid
+PhaseProjectionSpec
+PhaseCaseRecord
+PhaseCyclingPlan
+PhaseCyclingResult
+normalize_target_phase_vector
+phase_projection_weight
+fourier_project_phase_cases
+build_uniform_phase_grid
+extract_single_run_quantity
 ```
 
 这些 API 不依赖 TA / 2DES / solver / matplotlib，只负责构造一次 concrete
@@ -317,6 +336,58 @@ lab_frame_absorption_response(...)
 
 这些操作属于后续 Layer 2 / Layer 3。
 
+## Milestone 4：generic PhaseCyclingPlan / Fourier projection
+
+当前 `phase_cycling.py` 提供一个实验无关的 phase-grid runner：
+
+```text
+PhaseGrid
+-> phase vectors
+-> clone SingleRunPlan per phase case
+-> SingleRunPlan.execute()
+-> extract selected readout array
+-> stack phase_cases x ...
+-> Fourier projection by target_phase_vector
+-> PhaseCyclingResult
+```
+
+`PhaseGrid` 只表达 phase tags 到 phase samples 的笛卡尔积。`PhaseCyclingPlan`
+只重复调用 `SingleRunPlan`，并通过 `PhaseProjectionSpec.quantity` 指定要
+投影的 readout array，例如：
+
+```text
+readout.polarization_C_per_m2
+readout.readout_field_MV_per_cm
+readout.spectrum.absorption
+```
+
+Fourier projection 的默认约定为：
+
+```text
+weight = exp(-i * sum_k target_phase_vector[k] * phase_vector[k])
+```
+
+`target_phase_vector` 是 phase-channel 控制入口。它的系数必须是整数；
+例如 `{"probe": 1}` 表示提取随 probe phase 带 `exp(+i phi_probe)` 的
+分量。projection 保留 complex 结果，不强制取实部。
+
+`PhaseCyclingPlan` 当前不保存文件，也不自动生成 checkpoint path。若
+`base_plan.checkpoint.enabled=True`，当前实现直接拒绝，以避免多个 phase
+case 默认覆盖或误读同一个 checkpoint。
+
+generic phase cycler 当前不计算：
+
+- `S_TA = S_pump_probe - S_probe_only`；
+- pump-probe / probe-only orchestration；
+- delay-energy map；
+- 2DES rephasing / non-rephasing / double-quantum recipe；
+- `t1/t2/t3` grid；
+- 2D Fourier transform。
+
+这些操作属于后续 Layer 3 recipe。未来 TA recipe 负责 delay scan、
+probe-only reference 和 pump-probe difference；未来 2DES recipe 负责
+`t1/t2/t3` grid 和二维 FFT。
+
 ## Migration plan
 
 ### Milestone 1：已完成
@@ -347,11 +418,16 @@ lab_frame_absorption_response(...)
   field 或 named subfield；
 - 未实现 phase grid、Fourier projection、TA subtraction 或 2DES readout。
 
-### Milestone 4：generic PhaseCycler runner
+### Milestone 4：已完成低风险 generic PhaseCycler runner
 
-- 对任意 `SingleRunPlan` 执行 phase grid；
-- 用 `target_phase_vector` 做 Fourier projection；
-- cycler 保持实验无关。
+- 已实现 `PhaseGrid / PhaseCyclingPlan / PhaseCyclingResult`；
+- 已实现 `normalize_target_phase_vector`、`phase_projection_weight` 和
+  `fourier_project_phase_cases`；
+- 已支持从 `SingleRunResult.readout` 中提取指定 array 并投影；
+- 已支持 fake executor 测试，不要求默认运行多次 solver；
+- checkpoint enabled 时有明确 guard；
+- 未实现 TA subtraction、TA recipe v2、2DES recipe 或 phase-case
+  checkpoint path builder。
 
 ### Milestone 5：迁移 TA phase-cycling demo
 

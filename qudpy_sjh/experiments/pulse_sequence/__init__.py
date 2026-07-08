@@ -1,5 +1,17 @@
 """Generic pulse-sequence scaffolds for one concrete field configuration."""
 
+from .phase_cycling import (
+    PhaseCaseRecord,
+    PhaseCyclingPlan,
+    PhaseCyclingResult,
+    PhaseGrid,
+    PhaseProjectionSpec,
+    build_uniform_phase_grid,
+    extract_single_run_quantity,
+    fourier_project_phase_cases,
+    normalize_target_phase_vector,
+    phase_projection_weight,
+)
 from .pulse_sequence import (
     FieldGroupSpec,
     PulseSequenceSpec,
@@ -22,6 +34,11 @@ from .single_run import (
 
 __all__ = [
     "FieldGroupSpec",
+    "PhaseCaseRecord",
+    "PhaseCyclingPlan",
+    "PhaseCyclingResult",
+    "PhaseGrid",
+    "PhaseProjectionSpec",
     "PulseSequenceSpec",
     "PulseSpec",
     "ReadoutSpec",
@@ -30,9 +47,14 @@ __all__ = [
     "SingleRunPlan",
     "SingleRunReadoutResult",
     "SingleRunResult",
+    "build_uniform_phase_grid",
     "compute_single_run_readout",
+    "extract_single_run_quantity",
+    "fourier_project_phase_cases",
     "is_supported_phase_backend",
     "normalize_phase_vector",
+    "normalize_target_phase_vector",
+    "phase_projection_weight",
     "supports_phase_override",
     "validate_phase_tag",
     "validate_pulse_name",
