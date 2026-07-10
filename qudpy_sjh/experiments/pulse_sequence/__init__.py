@@ -1,11 +1,14 @@
 """Generic pulse-sequence scaffolds for one concrete field configuration."""
 
 from .phase_cycling import (
+    AxisMetadataSpec,
     PhaseCaseRecord,
     PhaseCyclingPlan,
     PhaseCyclingResult,
     PhaseGrid,
     PhaseProjectionSpec,
+    ProjectedReadoutBundle,
+    build_projected_readout_bundle,
     build_uniform_phase_grid,
     extract_single_run_quantity,
     fourier_project_phase_cases,
@@ -33,12 +36,14 @@ from .single_run import (
 )
 
 __all__ = [
+    "AxisMetadataSpec",
     "FieldGroupSpec",
     "PhaseCaseRecord",
     "PhaseCyclingPlan",
     "PhaseCyclingResult",
     "PhaseGrid",
     "PhaseProjectionSpec",
+    "ProjectedReadoutBundle",
     "PulseSequenceSpec",
     "PulseSpec",
     "ReadoutSpec",
@@ -47,6 +52,7 @@ __all__ = [
     "SingleRunPlan",
     "SingleRunReadoutResult",
     "SingleRunResult",
+    "build_projected_readout_bundle",
     "build_uniform_phase_grid",
     "compute_single_run_readout",
     "extract_single_run_quantity",

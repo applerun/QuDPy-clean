@@ -6,7 +6,10 @@ import unittest
 import numpy as np
 
 from qudpy_sjh.experiments.pulse_sequence import (
+    AxisMetadataSpec,
+    PhaseCaseRecord,
     PhaseCyclingPlan,
+    PhaseCyclingResult,
     PhaseGrid,
     PhaseProjectionSpec,
     PulseSequenceSpec,
@@ -17,6 +20,7 @@ from qudpy_sjh.experiments.pulse_sequence import (
     SingleRunPlan,
     SingleRunReadoutResult,
     SingleRunResult,
+    build_projected_readout_bundle,
     build_uniform_phase_grid,
     extract_single_run_quantity,
     fourier_project_phase_cases,
@@ -83,9 +87,11 @@ def _fake_result(
     case_name: str = "fake",
     polarization=None,
     spectrum=None,
+    time_fs=None,
 ) -> SingleRunResult:
     readout = SingleRunReadoutResult(
         mode="absorption" if spectrum is not None else "polarization",
+        time_fs=None if time_fs is None else np.asarray(time_fs),
         polarization_C_per_m2=np.asarray([1.0, 2.0]) if polarization is None else np.asarray(polarization),
         spectrum=spectrum,
     )
@@ -95,6 +101,33 @@ def _fake_result(
         dynamics_result=None,
         field_metadata={},
         readout=readout,
+    )
+
+
+def _fake_phase_result(
+    *,
+    projected=None,
+    case_results=None,
+) -> PhaseCyclingResult:
+    results = [] if case_results is None else list(case_results)
+    return PhaseCyclingResult(
+        base_case_name="base_case",
+        phase_grid=PhaseGrid({"probe": (0.0, math.pi)}),
+        target_phase_vector={"probe": 1},
+        projection=PhaseProjectionSpec(quantity="readout.spectrum.absorption"),
+        phase_vectors=[{"probe": 0.0}, {"probe": math.pi}],
+        case_records=[
+            PhaseCaseRecord(
+                index=index,
+                case_name=f"case_{index}",
+                phase_vector={"probe": float(index) * math.pi},
+                single_run_result=result,
+                quantity_shape=(2,),
+            )
+            for index, result in enumerate(results)
+        ],
+        values=np.zeros((2, 2), dtype=np.complex128),
+        projected=np.asarray([1.0 + 0.0j, 2.0 + 0.0j]) if projected is None else np.asarray(projected),
     )
 
 
@@ -192,6 +225,7 @@ class QuantitySelectorTests(unittest.TestCase):
         result = _fake_result(
             polarization=np.asarray([1.0, 2.0]),
             spectrum={"absorption": np.asarray([3.0, 4.0])},
+            time_fs=np.asarray([0.0, 1.0]),
         )
 
         np.testing.assert_allclose(
@@ -202,6 +236,10 @@ class QuantitySelectorTests(unittest.TestCase):
             extract_single_run_quantity(result, "readout.spectrum.absorption"),
             np.asarray([3.0, 4.0]),
         )
+        np.testing.assert_allclose(
+            extract_single_run_quantity(result, "readout.time_fs"),
+            np.asarray([0.0, 1.0]),
+        )
 
     def test_extract_readout_errors(self):
         result = _fake_result(spectrum={"absorption": np.asarray([1.0])})
@@ -210,6 +248,158 @@ class QuantitySelectorTests(unittest.TestCase):
             extract_single_run_quantity(result, "readout.spectrum.energy_eV")
         with self.assertRaisesRegex(ValueError, "Unsupported quantity"):
             extract_single_run_quantity(result, "density")
+
+
+class ProjectedReadoutBundleTests(unittest.TestCase):
+    def test_axis_metadata_spec_validation(self):
+        self.assertEqual(
+            AxisMetadataSpec(
+                name="energy_eV",
+                quantity="readout.spectrum.energy_eV",
+                source="first_case",
+            ).source,
+            "first_case",
+        )
+        self.assertEqual(
+            AxisMetadataSpec(
+                name="omega_fs_inv",
+                quantity="readout.spectrum.omega_fs_inv",
+                source="validate_all_cases",
+            ).source,
+            "validate_all_cases",
+        )
+        with self.assertRaises(ValueError):
+            AxisMetadataSpec(name="", quantity="readout.spectrum.energy_eV")
+        with self.assertRaises(ValueError):
+            AxisMetadataSpec(name="energy_eV", quantity="")
+        with self.assertRaises(ValueError):
+            AxisMetadataSpec(name="energy_eV", quantity="readout.spectrum.energy_eV", source="all")
+        with self.assertRaises(ValueError):
+            AxisMetadataSpec(name="energy_eV", quantity="readout.spectrum.energy_eV", rtol=-1.0)
+        with self.assertRaises(ValueError):
+            AxisMetadataSpec(name="energy_eV", quantity="readout.spectrum.energy_eV", atol=-1.0)
+
+    def test_build_projected_readout_bundle_without_axes(self):
+        phase_result = _fake_phase_result(projected=np.asarray([1.0 + 1.0j, 2.0 + 0.0j]))
+
+        bundle = build_projected_readout_bundle(phase_result)
+        payload = bundle.to_dict(include_arrays=False)
+
+        self.assertEqual(bundle.signal_name, "absorption")
+        self.assertEqual(bundle.signal_quantity, "readout.spectrum.absorption")
+        np.testing.assert_allclose(bundle.projected_signal, phase_result.projected)
+        self.assertIs(bundle.projected_signal, phase_result.projected)
+        self.assertEqual(bundle.axes, {})
+        self.assertEqual(payload["projected_shape"], (2,))
+        self.assertNotIn("projected_signal", payload)
+        self.assertNotIn("axes", payload)
+
+    def test_first_case_axis_extraction(self):
+        first = _fake_result(
+            spectrum={
+                "energy_eV": np.asarray([1.0, 1.5]),
+                "omega_fs_inv": np.asarray([0.1, 0.2]),
+                "absorption": np.asarray([3.0, 4.0]),
+            },
+        )
+        second = _fake_result(
+            spectrum={
+                "energy_eV": np.asarray([9.0, 9.5]),
+                "omega_fs_inv": np.asarray([0.9, 1.0]),
+                "absorption": np.asarray([5.0, 6.0]),
+            },
+        )
+
+        bundle = build_projected_readout_bundle(
+            _fake_phase_result(case_results=(first, second)),
+            axis_specs=(
+                AxisMetadataSpec(
+                    name="energy_eV",
+                    quantity="readout.spectrum.energy_eV",
+                    source="first_case",
+                ),
+            ),
+        )
+
+        np.testing.assert_allclose(bundle.axes["energy_eV"], np.asarray([1.0, 1.5]))
+
+    def test_validate_all_cases_axis_extraction(self):
+        energy = np.asarray([1.0, 1.5])
+        phase_result = _fake_phase_result(
+            case_results=(
+                _fake_result(spectrum={"energy_eV": energy, "absorption": np.asarray([1.0, 2.0])}),
+                _fake_result(spectrum={"energy_eV": energy.copy(), "absorption": np.asarray([3.0, 4.0])}),
+            )
+        )
+
+        bundle = build_projected_readout_bundle(
+            phase_result,
+            axis_specs=(
+                AxisMetadataSpec(name="energy_eV", quantity="readout.spectrum.energy_eV"),
+            ),
+        )
+
+        np.testing.assert_allclose(bundle.axes["energy_eV"], energy)
+        self.assertEqual(bundle.axes["energy_eV"].shape, (2,))
+
+    def test_validate_all_cases_axis_mismatch(self):
+        phase_result = _fake_phase_result(
+            case_results=(
+                _fake_result(spectrum={"energy_eV": np.asarray([1.0, 1.5]), "absorption": np.asarray([1.0, 2.0])}),
+                _fake_result(spectrum={"energy_eV": np.asarray([1.0, 1.6]), "absorption": np.asarray([3.0, 4.0])}),
+            )
+        )
+
+        with self.assertRaisesRegex(ValueError, "energy_eV"):
+            build_projected_readout_bundle(
+                phase_result,
+                axis_specs=(
+                    AxisMetadataSpec(name="energy_eV", quantity="readout.spectrum.energy_eV"),
+                ),
+            )
+
+    def test_missing_single_run_result_for_axis_extraction(self):
+        phase_result = _fake_phase_result(projected=np.asarray([1.0]))
+        phase_result.case_records = [
+            PhaseCaseRecord(
+                index=0,
+                case_name="case_0",
+                phase_vector={"probe": 0.0},
+                single_run_result=None,
+            )
+        ]
+
+        with self.assertRaisesRegex(ValueError, "stored single_run_result"):
+            build_projected_readout_bundle(
+                phase_result,
+                axis_specs=(
+                    AxisMetadataSpec(name="energy_eV", quantity="readout.spectrum.energy_eV"),
+                ),
+            )
+
+    def test_custom_signal_name_and_include_arrays(self):
+        energy = np.asarray([1.0, 1.5])
+        phase_result = _fake_phase_result(
+            projected=np.asarray([1.0 + 1.0j, 2.0 + 0.0j]),
+            case_results=(
+                _fake_result(spectrum={"energy_eV": energy, "absorption": np.asarray([1.0, 2.0])}),
+                _fake_result(spectrum={"energy_eV": energy.copy(), "absorption": np.asarray([3.0, 4.0])}),
+            ),
+        )
+
+        bundle = build_projected_readout_bundle(
+            phase_result,
+            signal_name="projected_absorption",
+            axis_specs=(
+                AxisMetadataSpec(name="energy_eV", quantity="readout.spectrum.energy_eV"),
+            ),
+        )
+        payload = bundle.to_dict(include_arrays=True)
+
+        self.assertEqual(bundle.signal_name, "projected_absorption")
+        self.assertIn("projected_signal", payload)
+        self.assertIn("axes", payload)
+        self.assertEqual(payload["axes"]["energy_eV"], [1.0, 1.5])
 
 
 class PhaseCyclingPlanTests(unittest.TestCase):

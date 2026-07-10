@@ -1,12 +1,14 @@
 """Experiment-level scaffolds built on the stable QuDPy utilities."""
 
 from .pulse_sequence import (
+    AxisMetadataSpec,
     FieldGroupSpec,
     PhaseCaseRecord,
     PhaseCyclingPlan,
     PhaseCyclingResult,
     PhaseGrid,
     PhaseProjectionSpec,
+    ProjectedReadoutBundle,
     PulseSequenceSpec,
     PulseSpec,
     ReadoutSpec,
@@ -15,6 +17,7 @@ from .pulse_sequence import (
     SingleRunPlan,
     SingleRunReadoutResult,
     SingleRunResult,
+    build_projected_readout_bundle,
     build_uniform_phase_grid,
     compute_single_run_readout,
     extract_single_run_quantity,
@@ -29,12 +32,14 @@ from .pulse_sequence import (
 )
 
 __all__ = [
+    "AxisMetadataSpec",
     "FieldGroupSpec",
     "PhaseCaseRecord",
     "PhaseCyclingPlan",
     "PhaseCyclingResult",
     "PhaseGrid",
     "PhaseProjectionSpec",
+    "ProjectedReadoutBundle",
     "PulseSequenceSpec",
     "PulseSpec",
     "ReadoutSpec",
@@ -43,6 +48,7 @@ __all__ = [
     "SingleRunPlan",
     "SingleRunReadoutResult",
     "SingleRunResult",
+    "build_projected_readout_bundle",
     "build_uniform_phase_grid",
     "compute_single_run_readout",
     "extract_single_run_quantity",

@@ -275,6 +275,10 @@ def extract_single_run_quantity(
         raise TypeError("SingleRunResult.readout must be a SingleRunReadoutResult instance.")
 
     key = str(quantity).strip()
+    if key == "readout.time_fs":
+        if readout.time_fs is None:
+            raise ValueError("readout.time_fs is not available.")
+        return np.asarray(readout.time_fs)
     if key == "readout.polarization_C_per_m2":
         if readout.polarization_C_per_m2 is None:
             raise ValueError("readout.polarization_C_per_m2 is not available.")
@@ -293,10 +297,108 @@ def extract_single_run_quantity(
             raise KeyError(f"spectrum key {spectrum_key!r} is not available. Available keys: {available}")
         return np.asarray(readout.spectrum[spectrum_key])
     raise ValueError(
-        "Unsupported quantity. Expected 'readout.polarization_C_per_m2', "
+        "Unsupported quantity. Expected 'readout.time_fs', 'readout.polarization_C_per_m2', "
         "'readout.readout_field_MV_per_cm', or 'readout.spectrum.<key>'. "
         f"Got {quantity!r}."
     )
+
+
+@dataclass(frozen=True)
+class AxisMetadataSpec:
+    """描述 projected-result bundle 中的非投影 axis metadata。"""
+
+    name: str
+    quantity: str
+    source: str = "validate_all_cases"
+    rtol: float = 1.0e-9
+    atol: float = 1.0e-12
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        name = str(self.name).strip()
+        quantity = str(self.quantity).strip()
+        source = str(self.source).strip()
+        if not name:
+            raise ValueError("AxisMetadataSpec.name must not be empty.")
+        if not quantity:
+            raise ValueError("AxisMetadataSpec.quantity must not be empty.")
+        if source not in {"first_case", "validate_all_cases"}:
+            raise ValueError("AxisMetadataSpec.source must be 'first_case' or 'validate_all_cases'.")
+        rtol = float(self.rtol)
+        atol = float(self.atol)
+        if rtol < 0.0:
+            raise ValueError("AxisMetadataSpec.rtol must be >= 0.")
+        if atol < 0.0:
+            raise ValueError("AxisMetadataSpec.atol must be >= 0.")
+        object.__setattr__(self, "name", name)
+        object.__setattr__(self, "quantity", quantity)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "rtol", rtol)
+        object.__setattr__(self, "atol", atol)
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "name": self.name,
+            "quantity": self.quantity,
+            "source": self.source,
+            "rtol": float(self.rtol),
+            "atol": float(self.atol),
+            "metadata": dict(self.metadata),
+        }
+
+
+@dataclass
+class ProjectedReadoutBundle:
+    """Fourier-projected signal 与非投影 axis metadata 的通用打包结果。"""
+
+    signal_name: str
+    signal_quantity: str
+    projected_signal: np.ndarray
+    axes: dict[str, np.ndarray] = dataclass_field(default_factory=dict)
+    phase_result_summary: dict[str, Any] = dataclass_field(default_factory=dict)
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        signal_name = str(self.signal_name).strip()
+        signal_quantity = str(self.signal_quantity).strip()
+        if not signal_name:
+            raise ValueError("signal_name must not be empty.")
+        if not signal_quantity:
+            raise ValueError("signal_quantity must not be empty.")
+        axes = {str(name): np.asarray(values) for name, values in self.axes.items()}
+        for name in axes:
+            if not name.strip():
+                raise ValueError("axis name must not be empty.")
+        self.signal_name = signal_name
+        self.signal_quantity = signal_quantity
+        self.projected_signal = np.asarray(self.projected_signal)
+        self.axes = axes
+        self.phase_result_summary = dict(self.phase_result_summary)
+        self.metadata = dict(self.metadata)
+
+    def to_dict(self, *, include_arrays: bool = False) -> dict[str, Any]:
+        projected = np.asarray(self.projected_signal)
+        payload: dict[str, Any] = {
+            "class": self.__class__.__name__,
+            "signal_name": self.signal_name,
+            "signal_quantity": self.signal_quantity,
+            "projected_shape": tuple(projected.shape),
+            "projected_dtype": str(projected.dtype),
+            "is_complex": bool(np.iscomplexobj(projected)),
+            "axis_names": list(self.axes),
+            "axis_shapes": {name: tuple(np.asarray(values).shape) for name, values in self.axes.items()},
+            "phase_result_summary": dict(self.phase_result_summary),
+            "metadata": dict(self.metadata),
+        }
+        if include_arrays:
+            payload["projected_signal"] = _json_array(projected)
+            payload["axes"] = {
+                name: _json_array(np.asarray(values))
+                for name, values in self.axes.items()
+            }
+        return payload
 
 
 @dataclass
@@ -520,17 +622,108 @@ class PhaseCyclingPlan:
         }
 
 
+def _default_signal_name(quantity: str) -> str:
+    text = str(quantity).strip()
+    if not text:
+        raise ValueError("quantity must not be empty.")
+    return text.split(".")[-1]
+
+
+def _stored_single_run_results(phase_result: PhaseCyclingResult) -> list[SingleRunResult]:
+    if not phase_result.case_records:
+        raise ValueError("bundle axis extraction requires at least one phase case record.")
+    results: list[SingleRunResult] = []
+    for record in phase_result.case_records:
+        if record.single_run_result is None:
+            raise ValueError(
+                "bundle axis extraction requires stored single_run_result for every phase case record."
+            )
+        results.append(record.single_run_result)
+    return results
+
+
+def _extract_axis_from_cases(
+    single_run_results: Sequence[SingleRunResult],
+    spec: AxisMetadataSpec,
+) -> np.ndarray:
+    first = np.asarray(extract_single_run_quantity(single_run_results[0], spec.quantity))
+    if spec.source == "first_case":
+        return first
+
+    for index, result in enumerate(single_run_results[1:], start=1):
+        current = np.asarray(extract_single_run_quantity(result, spec.quantity))
+        if current.shape != first.shape:
+            raise ValueError(
+                f"axis metadata mismatch for {spec.name!r} ({spec.quantity}): "
+                f"shape {current.shape} at case {index} != {first.shape}."
+            )
+        if not np.allclose(current, first, rtol=spec.rtol, atol=spec.atol):
+            raise ValueError(
+                f"axis metadata mismatch for {spec.name!r} ({spec.quantity}) at phase case {index}."
+            )
+    return first
+
+
+def build_projected_readout_bundle(
+    phase_result: PhaseCyclingResult,
+    *,
+    signal_name: str | None = None,
+    axis_specs: Sequence[AxisMetadataSpec] | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> ProjectedReadoutBundle:
+    """把 Fourier-projected signal 与非投影 axis metadata 配对。
+
+    axis metadata 只从已有 phase cases 的 `SingleRunResult` 中读取，不做
+    Fourier projection，也不重新运行任何 single-run。
+    """
+
+    if not isinstance(phase_result, PhaseCyclingResult):
+        raise TypeError("phase_result must be a PhaseCyclingResult instance.")
+    name = _default_signal_name(phase_result.projection.quantity) if signal_name is None else str(signal_name).strip()
+    if not name:
+        raise ValueError("signal_name must not be empty.")
+
+    specs = tuple(axis_specs or ())
+    for spec in specs:
+        if not isinstance(spec, AxisMetadataSpec):
+            raise TypeError("axis_specs must contain AxisMetadataSpec instances.")
+
+    axes: dict[str, np.ndarray] = {}
+    if specs:
+        single_run_results = _stored_single_run_results(phase_result)
+        for spec in specs:
+            if spec.name in axes:
+                raise ValueError(f"duplicate axis metadata name: {spec.name!r}")
+            axes[spec.name] = _extract_axis_from_cases(single_run_results, spec)
+
+    bundle_metadata = {
+        "axis_specs": [spec.to_dict() for spec in specs],
+    }
+    bundle_metadata.update(dict(metadata or {}))
+    return ProjectedReadoutBundle(
+        signal_name=name,
+        signal_quantity=phase_result.projection.quantity,
+        projected_signal=phase_result.projected,
+        axes=axes,
+        phase_result_summary=phase_result.to_dict(include_arrays=False),
+        metadata=bundle_metadata,
+    )
+
+
 __all__ = [
     "PhaseVector",
     "TargetPhaseVector",
+    "AxisMetadataSpec",
     "PhaseGrid",
     "PhaseProjectionSpec",
     "PhaseCaseRecord",
     "PhaseCyclingPlan",
     "PhaseCyclingResult",
+    "ProjectedReadoutBundle",
     "normalize_target_phase_vector",
     "phase_projection_weight",
     "fourier_project_phase_cases",
     "build_uniform_phase_grid",
     "extract_single_run_quantity",
+    "build_projected_readout_bundle",
 ]

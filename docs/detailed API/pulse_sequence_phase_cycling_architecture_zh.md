@@ -7,7 +7,9 @@ Milestone 3 已新增 generic `SingleRunPlan / ReadoutSpec`，用于把一次
 concrete pulse sequence 接入 `run_case` 并执行可选通用 readout。
 Milestone 4 已新增 generic `PhaseGrid / PhaseCyclingPlan`，用于对任意
 `SingleRunPlan` 执行 phase grid 并按 `target_phase_vector` 做 Fourier
-projection。具体 TA / 2DES experiment recipe 仍属于后续阶段。
+projection。Milestone 4.5 已新增 generic projected-result bundle，用于
+把 Fourier-projected signal 与非投影 axis metadata 配对。具体 TA /
+2DES experiment recipe 仍属于后续阶段。
 
 ## 总体原则
 
@@ -188,9 +190,10 @@ readout/output 层，不属于 bottom-level pulse sequence。
 
 当前阶段不实现：
 
-- TA recipe v2；
 - TA subtraction；
-- probe-only / pump-probe orchestration；
+- full delay scan；
+- phase-cycling TA；
+- TAResultIO v2；
 - 2DES recipe；
 - rephasing / non-rephasing / double-quantum recipe；
 - 2D Fourier transform；
@@ -213,6 +216,8 @@ qudpy_sjh/experiments/pulse_sequence/
   phase_cycling.py
   pulse_sequence.py
   single_run.py
+qudpy_sjh/experiments/ta/
+  ta_recipe_v2.py
 ```
 
 主要 API：
@@ -238,11 +243,19 @@ PhaseProjectionSpec
 PhaseCaseRecord
 PhaseCyclingPlan
 PhaseCyclingResult
+AxisMetadataSpec
+ProjectedReadoutBundle
 normalize_target_phase_vector
 phase_projection_weight
 fourier_project_phase_cases
 build_uniform_phase_grid
 extract_single_run_quantity
+build_projected_readout_bundle
+TADelayCenters
+TAReadoutBundle
+TASingleDelayPlan
+TASingleDelayPairResult
+extract_ta_absorption_bundle
 ```
 
 这些 API 不依赖 TA / 2DES / solver / matplotlib，只负责构造一次 concrete
@@ -388,6 +401,125 @@ generic phase cycler 当前不计算：
 probe-only reference 和 pump-probe difference；未来 2DES recipe 负责
 `t1/t2/t3` grid 和二维 FFT。
 
+## Milestone 4.5：projected-result bundle 与 axis metadata
+
+`PhaseCyclingResult` 负责保存 phase-cycling runner 的核心结果：
+
+- 每个 phase case 的 values；
+- Fourier-projected signal；
+- phase vectors；
+- target phase vector；
+- projection metadata；
+- phase grid metadata。
+
+recipe 输出通常还需要把 projected signal 与非投影 axis metadata 配对。
+例如 absorption-like projection 后，常见 bundle 是：
+
+```text
+projected_signal = projected absorption
+axes["energy_eV"] = energy_eV
+axes["omega_fs_inv"] = omega_fs_inv
+```
+
+或 polarization projection 后：
+
+```text
+projected_signal = projected polarization_C_per_m2
+axes["time_fs"] = time_fs
+```
+
+`ProjectedReadoutBundle` 用于保存这种通用配对结果：
+
+```text
+signal_name
+signal_quantity
+projected_signal
+axes
+phase_result_summary
+metadata
+```
+
+`AxisMetadataSpec` 描述 axis metadata 从哪里来：
+
+- `source="first_case"`：只从第一个 phase case 提取 axis；
+- `source="validate_all_cases"`：从所有 phase cases 提取 axis，并用
+  `np.allclose` 验证一致。
+
+`validate_all_cases` 适合 `energy_eV`、`omega_fs_inv` 这类每个 phase case
+都应相同的频率轴。若不同 phase case 的 axis shape 或数值不一致，会直接
+报错，避免把不匹配的频率轴和 projected signal 绑定在一起。
+
+axis metadata 不做 Fourier projection。`target_phase_vector` 只作用于
+`PhaseProjectionSpec.quantity` 指定的 signal quantity。recipe 层决定哪些
+axes 应与 projected signal 配对；TA / 2DES 的物理约定仍由各自 recipe
+固定。
+
+当前 bundle helper 仍不实现：
+
+- TA subtraction；
+- delay scan；
+- probe-only / pump-probe orchestration；
+- 2DES `t1/t2/t3` grid；
+- 2D Fourier transform；
+- explicit LO/readout phase recipe；
+- phase-case checkpoint path builder。
+
+## Milestone 5.1：TA recipe v2 minimal single-delay scaffold
+
+当前 `ta_recipe_v2.py` 提供一个最小 TA recipe v2 外壳，用 Layer 3 的
+TA 语义组织已有 generic 层：
+
+```text
+pump PulseSpec
+probe PulseSpec
+single delay centers
+-> pump-probe SingleRunPlan
+-> probe-only SingleRunPlan
+-> probe-channel absorption-like readout bundle
+```
+
+最小 TA 物理语义：
+
+- physical pulses: pump pulse 与 probe pulse；
+- delay 定义：`delay_fs = probe_center_fs - pump_center_fs`；
+- 正 delay 表示 pump before probe；
+- readout / detection：probe-channel absorption-like readout；
+- `ReadoutSpec(mode="absorption", readout_field_name=probe.name)`；
+- reference cases：pump-probe response 与 probe-only response；
+- 后续 TA signal 约定：
+
+```text
+S_TA(omega, delay) = S_pump_probe(omega, delay) - S_probe_only(omega)
+```
+
+当前 readout 不是第三个激发脉冲。probe 既是 physical probe pulse，也是
+readout field reference。最小 TA recipe 不引入 independent LO phase tag；
+如果后续显式建模 heterodyne observable，再在 recipe 层定义 LO / readout
+phase 约定。
+
+`TASingleDelayPlan` 当前只生成两条 `SingleRunPlan`：
+
+- `make_pump_probe_plan()`：sequence 包含 pump 和 probe；
+- `make_probe_only_plan()`：sequence 只包含 probe。
+
+`extract_ta_absorption_bundle(...)` 从 `SingleRunResult.readout.spectrum`
+提取：
+
+- `absorption`；
+- `energy_eV`；
+- 可选 `omega_fs_inv`。
+
+它只打包单条 response，不做 subtraction、不做 phase projection、不假设
+delay scan。
+
+当前 TA recipe v2 minimal scaffold 不实现：
+
+- TA subtraction；
+- delay scan；
+- phase-cycling TA；
+- TAResultIO v2；
+- old demo migration。
+
 ## Migration plan
 
 ### Milestone 1：已完成
@@ -429,7 +561,49 @@ probe-only reference 和 pump-probe difference；未来 2DES recipe 负责
 - 未实现 TA subtraction、TA recipe v2、2DES recipe 或 phase-case
   checkpoint path builder。
 
-### Milestone 5：迁移 TA phase-cycling demo
+### Milestone 4.5：已完成低风险 projected-result bundle
+
+- 已实现 `AxisMetadataSpec`；
+- 已实现 `ProjectedReadoutBundle`；
+- 已实现 `build_projected_readout_bundle`；
+- 已支持从 first case 提取 axis metadata；
+- 已支持从 all cases 提取并验证 axis metadata；
+- 已支持 `readout.time_fs` quantity；
+- axis metadata 不做 Fourier projection；
+- 未实现 TA subtraction、delay scan 或 2DES FFT。
+
+### Milestone 5.1：已完成低风险 TA recipe v2 minimal scaffold
+
+- 已实现 `TADelayCenters`；
+- 已实现 `TAReadoutBundle`；
+- 已实现 `TASingleDelayPlan`；
+- 已实现 `TASingleDelayPairResult`；
+- 已实现 `extract_ta_absorption_bundle`；
+- 已支持生成单 delay 的 pump-probe `SingleRunPlan`；
+- 已支持生成单 delay 的 probe-only `SingleRunPlan`；
+- 默认 readout 是 probe-channel absorption-like readout；
+- 未实现 TA subtraction、delay scan、phase-cycling TA 或 TAResultIO v2。
+
+### Milestone 5.2：TA subtraction 与 energy-axis alignment
+
+- 定义 `TASubtractionSpec`；
+- 定义 `TAContrastResult`；
+- 实现 `S_TA = S_pump_probe - S_probe_only`；
+- 验证 pump-probe / probe-only 的 energy axis 对齐。
+
+### Milestone 5.3：TA delay scan
+
+- 对多个 delay 生成 `TASingleDelayPlan`；
+- 收集 delay-energy map；
+- 不改变 single-run / solver 行为。
+
+### Milestone 5.4：optional phase-cycling TA
+
+- 将 generic `PhaseCyclingPlan` 接入 TA recipe；
+- 固定 TA recipe 的 target phase vector 约定；
+- 不把 phase cycling 设为默认流程。
+
+### Milestone 5.5：TAResultIO v2 与 demo migration
 
 - 新增 `TAPhaseCyclingRecipe / TAPhaseCyclingResult / TAPhaseCyclingIO`；
 - 复现旧 demo 的 `phase_stack`、`phase_avg`、`phase_rms`、
