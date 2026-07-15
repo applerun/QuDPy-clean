@@ -1,17 +1,20 @@
 """Minimal TA recipe v2 scaffold built on generic pulse-sequence layers.
 
-本模块只表达单个 delay 的最小 TA 编排：
+本模块只表达最小 TA recipe v2 编排：
 
     pump/probe physical pulses
     -> pump-probe SingleRunPlan
     -> probe-only SingleRunPlan
     -> probe-channel absorption-like readout bundle
+    -> optional single-delay contrast
+    -> optional delay-energy scan map
 
 TA subtraction 只由显式 `compute_ta_contrast(...)` 执行，固定 convention 为
-`S_TA = S_pump_probe - S_probe_only`。当前不实现 delay scan、phase-cycling
-TA、TAResultIO v2 或旧 demo 迁移。readout 不是第三个激发脉冲；probe
-既是 physical probe pulse，也是 `ReadoutSpec(readout_field_name=probe.name)`
-的 reference field。
+`S_TA = S_pump_probe - S_probe_only`。delay scan 只把多个单 delay contrast
+按输入 delay 顺序堆叠成 delay × energy map，不做排序、插值或重采样。
+当前不实现 phase-cycling TA、TAResultIO v2、绘图、落盘或旧 demo 迁移。
+readout 不是第三个激发脉冲；probe 既是 physical probe pulse，也是
+`ReadoutSpec(readout_field_name=probe.name)` 的 reference field。
 """
 
 from __future__ import annotations
@@ -377,6 +380,214 @@ def compute_ta_contrast(
     )
 
 
+@dataclass
+class TADelayScanMap:
+    """多个单 delay TA contrast 堆叠后的 delay-energy map。
+
+    delay 轴严格保留输入顺序，不排序；energy / omega 轴要求每个 delay 已经
+    对齐。当前不做 interpolation、resampling、smoothing 或落盘。
+    """
+
+    case_name: str
+    delays_fs: np.ndarray
+    energy_eV: np.ndarray
+    delta_absorption: np.ndarray
+    omega_fs_inv: np.ndarray | None = None
+    contrast_results: tuple[TAContrastResult, ...] = ()
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.case_name = validate_pulse_name(self.case_name)
+        delays = np.asarray(self.delays_fs, dtype=float)
+        energy = np.asarray(self.energy_eV, dtype=float)
+        delta = np.asarray(self.delta_absorption)
+        if delays.ndim != 1:
+            raise ValueError(f"delays_fs must be one-dimensional. Got shape {delays.shape}.")
+        if delays.size == 0:
+            raise ValueError("delays_fs must not be empty.")
+        if not np.all(np.isfinite(delays)):
+            raise ValueError("delays_fs must contain only finite values.")
+        if energy.ndim != 1:
+            raise ValueError(f"energy_eV must be one-dimensional. Got shape {energy.shape}.")
+        if not np.all(np.isfinite(energy)):
+            raise ValueError("energy_eV must contain only finite values.")
+        expected_shape = (delays.size, energy.size)
+        if delta.shape != expected_shape:
+            raise ValueError(
+                f"delta_absorption shape must be delay x energy {expected_shape}. Got {delta.shape}."
+            )
+        omega = None if self.omega_fs_inv is None else np.asarray(self.omega_fs_inv, dtype=float)
+        if omega is not None:
+            if omega.shape != energy.shape:
+                raise ValueError(
+                    f"omega_fs_inv shape must match energy_eV shape. Got {omega.shape} and {energy.shape}."
+                )
+            if not np.all(np.isfinite(omega)):
+                raise ValueError("omega_fs_inv must contain only finite values.")
+        contrasts = tuple(self.contrast_results)
+        for contrast in contrasts:
+            if not isinstance(contrast, TAContrastResult):
+                raise TypeError("contrast_results must contain only TAContrastResult instances.")
+        if contrasts and len(contrasts) != delays.size:
+            raise ValueError(
+                f"contrast_results length must match delays_fs length. Got {len(contrasts)} and {delays.size}."
+            )
+        self.delays_fs = delays
+        self.energy_eV = energy
+        self.delta_absorption = delta
+        self.omega_fs_inv = omega
+        self.contrast_results = contrasts
+        self.metadata = dict(self.metadata)
+
+    def to_dict(self, *, include_arrays: bool = False) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "class": self.__class__.__name__,
+            "case_name": self.case_name,
+            "n_delays": int(self.delays_fs.size),
+            "n_energy": int(self.energy_eV.size),
+            "delay_range_fs": (
+                float(np.min(self.delays_fs)),
+                float(np.max(self.delays_fs)),
+            ),
+            "energy_range_eV": _energy_range_eV(self.energy_eV),
+            "has_omega_fs_inv": self.omega_fs_inv is not None,
+            "delta_absorption_shape": tuple(self.delta_absorption.shape),
+            "delta_absorption_dtype": str(self.delta_absorption.dtype),
+            "contrast_cases": [contrast.case_name for contrast in self.contrast_results],
+            "metadata": dict(self.metadata),
+            "axis_policy": {
+                "delay_order": "input_order_preserved",
+                "energy_axis": "all delays must match; no interpolation or resampling",
+            },
+        }
+        if include_arrays:
+            payload["delays_fs"] = self.delays_fs.tolist()
+            payload["energy_eV"] = self.energy_eV.tolist()
+            payload["delta_absorption"] = self.delta_absorption.tolist()
+            payload["omega_fs_inv"] = None if self.omega_fs_inv is None else self.omega_fs_inv.tolist()
+        return payload
+
+
+def validate_ta_contrast_axes_for_scan(
+    contrasts: tuple[TAContrastResult, ...] | list[TAContrastResult],
+    *,
+    rtol: float = 1.0e-9,
+    atol: float = 1.0e-12,
+    validate_omega_axis: bool = True,
+) -> dict[str, Any]:
+    """验证多个单 delay contrast 可直接堆叠成 delay × energy map。
+
+    当前策略只接受完全对齐的 energy axis；不做插值、重采样或排序。
+    """
+
+    contrast_tuple = tuple(contrasts)
+    if not contrast_tuple:
+        raise ValueError("contrasts must not be empty.")
+    rtol_value = float(rtol)
+    atol_value = float(atol)
+    if rtol_value < 0.0:
+        raise ValueError("rtol must be >= 0.")
+    if atol_value < 0.0:
+        raise ValueError("atol must be >= 0.")
+    for contrast in contrast_tuple:
+        if not isinstance(contrast, TAContrastResult):
+            raise TypeError("contrasts must contain only TAContrastResult instances.")
+
+    reference = contrast_tuple[0]
+    for index, contrast in enumerate(contrast_tuple[1:], start=1):
+        if contrast.delta_absorption.shape != reference.delta_absorption.shape:
+            raise ValueError(
+                "delta_absorption shape mismatch at delay index "
+                f"{index}: reference={reference.delta_absorption.shape}, current={contrast.delta_absorption.shape}."
+            )
+        if contrast.energy_eV.shape != reference.energy_eV.shape:
+            raise ValueError(
+                "energy axis shape mismatch at delay index "
+                f"{index}: reference={reference.energy_eV.shape}, current={contrast.energy_eV.shape}."
+            )
+        if not np.allclose(contrast.energy_eV, reference.energy_eV, rtol=rtol_value, atol=atol_value):
+            raise ValueError(f"energy axis mismatch at delay index {index}.")
+
+        if validate_omega_axis:
+            has_reference_omega = reference.omega_fs_inv is not None
+            has_current_omega = contrast.omega_fs_inv is not None
+            if has_reference_omega != has_current_omega:
+                raise ValueError(f"omega axis mismatch at delay index {index}: omega_fs_inv is missing on one side.")
+            if has_reference_omega and has_current_omega:
+                assert reference.omega_fs_inv is not None
+                assert contrast.omega_fs_inv is not None
+                if contrast.omega_fs_inv.shape != reference.omega_fs_inv.shape:
+                    raise ValueError(
+                        "omega axis shape mismatch at delay index "
+                        f"{index}: reference={reference.omega_fs_inv.shape}, current={contrast.omega_fs_inv.shape}."
+                    )
+                if not np.allclose(
+                    contrast.omega_fs_inv,
+                    reference.omega_fs_inv,
+                    rtol=rtol_value,
+                    atol=atol_value,
+                ):
+                    raise ValueError(f"omega axis mismatch at delay index {index}.")
+
+    omega = reference.omega_fs_inv
+    summary: dict[str, Any] = {
+        "n_delays": int(len(contrast_tuple)),
+        "n_energy": int(reference.energy_eV.size),
+        "energy_min_eV": float(np.min(reference.energy_eV)) if reference.energy_eV.size else None,
+        "energy_max_eV": float(np.max(reference.energy_eV)) if reference.energy_eV.size else None,
+        "has_omega_fs_inv": omega is not None,
+        "validate_omega_axis": bool(validate_omega_axis),
+        "rtol": rtol_value,
+        "atol": atol_value,
+        "axis_policy": "input delay order preserved; energy axes must match; no interpolation or resampling",
+    }
+    if omega is not None:
+        summary["omega_min_fs_inv"] = float(np.min(omega)) if omega.size else None
+        summary["omega_max_fs_inv"] = float(np.max(omega)) if omega.size else None
+    return summary
+
+
+def build_ta_delay_scan_map(
+    contrasts: tuple[TAContrastResult, ...] | list[TAContrastResult],
+    *,
+    case_name: str = "ta_delay_scan",
+    rtol: float = 1.0e-9,
+    atol: float = 1.0e-12,
+    validate_omega_axis: bool = True,
+    metadata: Mapping[str, Any] | None = None,
+) -> TADelayScanMap:
+    """把多个单 delay contrast 堆叠为 delay × energy map。
+
+    delay 轴按 `contrasts` 的输入顺序生成，不按数值排序。
+    """
+
+    contrast_tuple = tuple(contrasts)
+    axis_summary = validate_ta_contrast_axes_for_scan(
+        contrast_tuple,
+        rtol=rtol,
+        atol=atol,
+        validate_omega_axis=validate_omega_axis,
+    )
+    reference = contrast_tuple[0]
+    map_metadata = {
+        "axis_validation": axis_summary,
+        "source_contrast_cases": [contrast.case_name for contrast in contrast_tuple],
+        "delay_axis_policy": "input_order_preserved",
+        "energy_axis_policy": "all delays must match; no interpolation or resampling",
+        "convention": "pump_probe_minus_probe_only",
+    }
+    map_metadata.update(dict(metadata or {}))
+    return TADelayScanMap(
+        case_name=case_name,
+        delays_fs=np.asarray([contrast.delay_fs for contrast in contrast_tuple], dtype=float),
+        energy_eV=reference.energy_eV,
+        omega_fs_inv=reference.omega_fs_inv,
+        delta_absorption=np.stack([contrast.delta_absorption for contrast in contrast_tuple], axis=0),
+        contrast_results=contrast_tuple,
+        metadata=map_metadata,
+    )
+
+
 def extract_ta_absorption_bundle(
     result: SingleRunResult,
     *,
@@ -648,14 +859,236 @@ class TASingleDelayPairResult:
         }
 
 
+@dataclass
+class TADelayScanPlan:
+    """最小 TA delay scan plan。
+
+    本类只把多个 `TASingleDelayPlan` 串起来，并把每个 delay 的 contrast
+    堆叠成 delay × energy map。delay 输入顺序会被保留；当前不做排序、
+    插值、重采样、绘图、保存或 phase cycling。
+    """
+
+    base_params: NLevelPhysicalParams
+    pump: PulseSpec
+    probe: PulseSpec
+    delays_fs: tuple[float, ...] | list[float] | np.ndarray
+    probe_center_fs: float = 0.0
+    normalizer: ParaNormalizer = dataclass_field(default_factory=ParaNormalizer)
+    readout: ReadoutSpec | None = None
+    subtraction: TASubtractionSpec = dataclass_field(default_factory=TASubtractionSpec)
+    checkpoint: SingleRunCheckpointSettings = dataclass_field(default_factory=SingleRunCheckpointSettings)
+    case_name: str = "ta_delay_scan"
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.base_params, NLevelPhysicalParams):
+            raise TypeError("base_params must be a NLevelPhysicalParams instance.")
+        if not isinstance(self.pump, PulseSpec):
+            raise TypeError("pump must be a PulseSpec instance.")
+        if not isinstance(self.probe, PulseSpec):
+            raise TypeError("probe must be a PulseSpec instance.")
+        if self.pump.name == self.probe.name:
+            raise ValueError("pump.name and probe.name must be distinct.")
+        delays = tuple(float(delay) for delay in self.delays_fs)
+        if not delays:
+            raise ValueError("delays_fs must not be empty.")
+        if not all(np.isfinite(delay) for delay in delays):
+            raise ValueError("delays_fs must contain only finite values.")
+        probe_center = float(self.probe_center_fs)
+        if not np.isfinite(probe_center):
+            raise ValueError("probe_center_fs must be finite.")
+        if not isinstance(self.normalizer, ParaNormalizer):
+            raise TypeError("normalizer must be a ParaNormalizer instance.")
+        if self.readout is not None and not isinstance(self.readout, ReadoutSpec):
+            raise TypeError("readout must be a ReadoutSpec instance or None.")
+        if not isinstance(self.subtraction, TASubtractionSpec):
+            raise TypeError("subtraction must be a TASubtractionSpec instance.")
+        if not isinstance(self.checkpoint, SingleRunCheckpointSettings):
+            raise TypeError("checkpoint must be a SingleRunCheckpointSettings instance.")
+        if self.checkpoint.enabled:
+            raise ValueError("TADelayScanPlan v2 minimal scaffold does not support checkpoint.enabled=True.")
+        self.delays_fs = delays
+        self.probe_center_fs = probe_center
+        self.case_name = validate_pulse_name(self.case_name)
+        self.metadata = dict(self.metadata)
+
+    def make_single_delay_plan(self, delay_fs: float, *, index: int) -> TASingleDelayPlan:
+        """为 delay scan 中的一个 delay 生成单 delay plan。"""
+
+        delay = float(delay_fs)
+        if not np.isfinite(delay):
+            raise ValueError("delay_fs must be finite.")
+        delay_index = int(index)
+        if delay_index < 0:
+            raise ValueError("index must be >= 0.")
+        single_case_name = f"{self.case_name}_i{delay_index:03d}_delay_{_safe_case_value(delay)}_fs"
+        return TASingleDelayPlan(
+            base_params=self.base_params,
+            pump=self.pump,
+            probe=self.probe,
+            delay=TADelayCenters(delay_fs=delay, probe_center_fs=self.probe_center_fs),
+            normalizer=self.normalizer,
+            readout=self.readout,
+            checkpoint=self.checkpoint,
+            case_name=single_case_name,
+            metadata={
+                "scan_case_name": self.case_name,
+                "scan_index": delay_index,
+                "scan_delay_order": "input_order_preserved",
+                **dict(self.metadata),
+            },
+        )
+
+    def make_single_delay_plans(self) -> tuple[TASingleDelayPlan, ...]:
+        return tuple(
+            self.make_single_delay_plan(delay_fs, index=index)
+            for index, delay_fs in enumerate(self.delays_fs)
+        )
+
+    def execute(self, *, executor: Any | None = None) -> "TADelayScanResult":
+        """执行 delay scan。
+
+        `executor` 是测试和上层编排入口，输入 `TASingleDelayPlan`，必须返回
+        `TASingleDelayPairResult`。当 executor 为 None 时才调用真实
+        `TASingleDelayPlan.execute_pair()`。
+        """
+
+        single_delay_plans = self.make_single_delay_plans()
+        pair_results: list[TASingleDelayPairResult] = []
+        contrast_results: list[TAContrastResult] = []
+        for index, single_plan in enumerate(single_delay_plans):
+            pair_result = single_plan.execute_pair() if executor is None else executor(single_plan)
+            if not isinstance(pair_result, TASingleDelayPairResult):
+                raise TypeError("executor must return a TASingleDelayPairResult instance.")
+            contrast = pair_result.compute_contrast(
+                subtraction=self.subtraction,
+                case_name=f"{single_plan.case_name}_contrast",
+            )
+            contrast.metadata.update(
+                {
+                    "scan_case_name": self.case_name,
+                    "scan_index": index,
+                    "scan_delay_order": "input_order_preserved",
+                }
+            )
+            pair_results.append(pair_result)
+            contrast_results.append(contrast)
+
+        scan_map = build_ta_delay_scan_map(
+            tuple(contrast_results),
+            case_name=f"{self.case_name}_map",
+            rtol=self.subtraction.rtol,
+            atol=self.subtraction.atol,
+            validate_omega_axis=self.subtraction.validate_omega_axis,
+            metadata={
+                "scan_case_name": self.case_name,
+                "scan_plan": self.to_dict(),
+            },
+        )
+        return TADelayScanResult(
+            case_name=self.case_name,
+            scan_plan=self,
+            single_delay_plans=single_delay_plans,
+            pair_results=tuple(pair_results),
+            contrast_results=tuple(contrast_results),
+            scan_map=scan_map,
+            metadata={"delay_order": "input_order_preserved"},
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        readout = ReadoutSpec(mode="absorption", readout_field_name=self.probe.name) if self.readout is None else self.readout
+        return {
+            "class": self.__class__.__name__,
+            "case_name": self.case_name,
+            "n_delays": int(len(self.delays_fs)),
+            "delays_fs": [float(delay) for delay in self.delays_fs],
+            "probe_center_fs": float(self.probe_center_fs),
+            "pump": self.pump.to_dict(),
+            "probe": self.probe.to_dict(),
+            "readout": readout.to_dict(),
+            "subtraction": self.subtraction.to_dict(),
+            "checkpoint": self.checkpoint.to_dict(),
+            "metadata": dict(self.metadata),
+            "ta_semantics": {
+                "delay_order": "input_order_preserved",
+                "scan_signal": "S_TA(omega, delay) = S_pump_probe(omega, delay) - S_probe_only(omega)",
+                "axis_policy": "all delay energy axes must match; no interpolation or resampling",
+            },
+        }
+
+
+@dataclass
+class TADelayScanResult:
+    """最小 TA delay scan 执行结果容器。"""
+
+    case_name: str
+    scan_plan: TADelayScanPlan
+    single_delay_plans: tuple[TASingleDelayPlan, ...]
+    pair_results: tuple[TASingleDelayPairResult, ...]
+    contrast_results: tuple[TAContrastResult, ...]
+    scan_map: TADelayScanMap
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.case_name = validate_pulse_name(self.case_name)
+        if not isinstance(self.scan_plan, TADelayScanPlan):
+            raise TypeError("scan_plan must be a TADelayScanPlan instance.")
+        single_plans = tuple(self.single_delay_plans)
+        pair_results = tuple(self.pair_results)
+        contrast_results = tuple(self.contrast_results)
+        if not isinstance(self.scan_map, TADelayScanMap):
+            raise TypeError("scan_map must be a TADelayScanMap instance.")
+        n_delays = len(single_plans)
+        if n_delays == 0:
+            raise ValueError("single_delay_plans must not be empty.")
+        if len(pair_results) != n_delays:
+            raise ValueError("pair_results length must match single_delay_plans length.")
+        if len(contrast_results) != n_delays:
+            raise ValueError("contrast_results length must match single_delay_plans length.")
+        if self.scan_map.delays_fs.shape != (n_delays,):
+            raise ValueError("scan_map delay axis length must match single_delay_plans length.")
+        for item in single_plans:
+            if not isinstance(item, TASingleDelayPlan):
+                raise TypeError("single_delay_plans must contain only TASingleDelayPlan instances.")
+        for item in pair_results:
+            if not isinstance(item, TASingleDelayPairResult):
+                raise TypeError("pair_results must contain only TASingleDelayPairResult instances.")
+        for index, item in enumerate(contrast_results):
+            if not isinstance(item, TAContrastResult):
+                raise TypeError("contrast_results must contain only TAContrastResult instances.")
+            if not np.isclose(item.delay_fs, self.scan_map.delays_fs[index], rtol=0.0, atol=0.0):
+                raise ValueError(f"contrast_results delay mismatch at index {index}.")
+        self.single_delay_plans = single_plans
+        self.pair_results = pair_results
+        self.contrast_results = contrast_results
+        self.metadata = dict(self.metadata)
+
+    def to_dict(self, *, include_arrays: bool = False) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "case_name": self.case_name,
+            "scan_plan": self.scan_plan.to_dict(),
+            "scan_map": self.scan_map.to_dict(include_arrays=include_arrays),
+            "single_delay_cases": [plan.case_name for plan in self.single_delay_plans],
+            "pair_cases": [pair.case_name for pair in self.pair_results],
+            "contrast_cases": [contrast.case_name for contrast in self.contrast_results],
+            "metadata": dict(self.metadata),
+        }
+
+
 __all__ = [
     "TADelayCenters",
     "TAReadoutBundle",
     "TASubtractionSpec",
     "TAContrastResult",
+    "TADelayScanMap",
     "TASingleDelayPlan",
     "TASingleDelayPairResult",
+    "TADelayScanPlan",
+    "TADelayScanResult",
     "extract_ta_absorption_bundle",
     "validate_ta_readout_bundle_axes",
     "compute_ta_contrast",
+    "validate_ta_contrast_axes_for_scan",
+    "build_ta_delay_scan_map",
 ]

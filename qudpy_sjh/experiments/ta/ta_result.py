@@ -5,6 +5,16 @@ TA-specific spectrum、delay map、probe-only reference 和默认 TA 输出。
 它不是 generic pulse-sequence result framework，当前 phase-cycling
 validation demo 没有使用它，也不默认输出 phase_avg / phase_rms。
 phase-cycling result IO 应由后续上层 recipe/cycler 单独设计。
+
+Legacy / deprecation policy:
+
+- 这是 legacy TA recipe v1 prototype，不是当前 TA recipe v2 主线；
+- 当前保留为 historical reference、IO/export behavior reference、
+  migration comparison 和 regression reference；
+- 新开发应优先使用 ``qudpy_sjh.experiments.pulse_sequence`` 以及
+  ``qudpy_sjh.experiments.ta.ta_recipe_v2``；
+- 本文件不在运行时发 ``DeprecationWarning``，避免污染测试输出；
+- 本轮不删除、不移动、不重构旧文件。
 """
 
 from __future__ import annotations

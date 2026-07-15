@@ -99,11 +99,58 @@ Fourier projection。
 这些文件的定位是：
 
 - 当前未被 phase-cycling validation demo 使用；
-- 可作为后续 TA recipe v2 的参考和回归基准；
+- 作为 historical reference、IO/export behavior reference、migration
+  comparison 和 regression reference；
 - 不是 generic pulse-sequence simulation framework；
+- 不是当前 TA recipe v2 主线；
+- 作为 frozen reference 暂时保留；
 - 当前不默认执行 phase cycling；
-- 未来 TA recipe v2 可以逐步调用 generic pulse-sequence / phase-cycling
-  基础层。
+- 新开发优先使用 `qudpy_sjh.experiments.pulse_sequence` 和
+  `qudpy_sjh.experiments.ta.ta_recipe_v2`。
+
+## Legacy TA v1 prototype audit / deprecation policy
+
+legacy TA v1 prototype 文件包括：
+
+- `qudpy_sjh/experiments/ta/ta_settings.py`
+- `qudpy_sjh/experiments/ta/ta_case_plan.py`
+- `qudpy_sjh/experiments/ta/ta_result.py`
+
+当前策略：
+
+- v1 保留为 legacy / frozen reference；
+- v1 不删除、不移动、不重构执行逻辑；
+- v1 不在运行时发 `DeprecationWarning`，避免污染测试输出；
+- v2 主线位于 `qudpy_sjh/experiments/ta/ta_recipe_v2.py`，并复用 generic
+  pulse-sequence / single-run / phase-cycling framework；
+- 待 v2 IO/export 和 old demo migration 完成后，再考虑把 v1 移到
+  `ta/legacy/` 或删除。
+
+功能覆盖关系：
+
+| 功能 | v1 prototype | v2 current status | 处理建议 |
+| --- | --- | --- | --- |
+| settings | `TASettings` 已有完整 v1 配置 | v2 以 plan/spec/dataclass 小对象表达当前最小主线 | 新开发优先 v2；v1 作为配置参考 |
+| single-run orchestration | `TAPlan` / `TADelayCasePlan` 直接编排 v1 delay case | `SingleRunPlan` + `TASingleDelayPlan` 已覆盖单次 concrete run 编排 | 新开发走 generic single-run + v2 recipe |
+| probe-only reference | v1 已内置 probe-only reference | v2 `TASingleDelayPlan.make_probe_only_plan()` 已覆盖 | v2 主线继续沿用显式 reference |
+| pump-probe pair | v1 已内置 pump-probe case | v2 `TASingleDelayPairResult` 已覆盖 | v2 主线继续扩展 |
+| TA subtraction | v1 已内置 `pump_probe - probe_only` | v2 `compute_ta_contrast()` 已覆盖单 delay subtraction | 新验证优先 v2 |
+| delay scan | v1 已有 full delay scan 与输出策略 | v2 已有 delay scan scaffold 和 delay × energy map stack | v1 暂作 full-output reference；v2 后续补 IO/export |
+| phase cycling | v1 不默认执行 | v2 TA 尚未接入 phase cycling；generic `PhaseCyclingPlan` 已存在 | 后续单独设计 optional phase-cycling TA |
+| IO/export | v1 `TAResultIO` 已有默认导出 | v2 暂无 TAResultIO v2 | v1 作为 IO/export reference |
+| old demo migration | v1 demo 仍使用旧路径 | v2 尚未迁移旧 demo | v2 IO/export 完成后再迁移 |
+
+package-level API 导出策略：
+
+- legacy aliases：`LegacyTASettings`、`LegacyTAPlan`、
+  `LegacyTADelayScanPlan`、`LegacyTAResult`、`LegacyTAResultIO`；
+- v1 原裸名保持稳定：例如 package 顶层 `TADelayScanPlan` 继续指向
+  `ta_case_plan.TADelayScanPlan`；
+- v2 scan 显式 aliases：`TADelayScanPlanV2`、`TADelayScanResultV2`、
+  `TADelayScanMapV2`；
+- 不允许 v2 在 package 顶层静默覆盖已有 legacy 裸名；
+- 如需 v2 原类名，可直接从 `qudpy_sjh.experiments.ta.ta_recipe_v2`
+  导入。
 
 ## phase_tag 语义
 
@@ -190,10 +237,12 @@ readout/output 层，不属于 bottom-level pulse sequence。
 
 当前阶段不实现：
 
-- TA subtraction；
-- full delay scan；
 - phase-cycling TA；
 - TAResultIO v2；
+- OD / relative difference / normalization variants；
+- interpolation / resampling / smoothing；
+- TA recipe v2 plotting；
+- TA recipe v2 npz / csv export；
 - 2DES recipe；
 - rephasing / non-rephasing / double-quantum recipe；
 - 2D Fourier transform；
@@ -256,10 +305,25 @@ TAReadoutBundle
 TASingleDelayPlan
 TASingleDelayPairResult
 extract_ta_absorption_bundle
+TASubtractionSpec
+TAContrastResult
+validate_ta_readout_bundle_axes
+compute_ta_contrast
+ta_recipe_v2.TADelayScanMap
+validate_ta_contrast_axes_for_scan
+build_ta_delay_scan_map
+ta_recipe_v2.TADelayScanPlan
+ta_recipe_v2.TADelayScanResult
+package alias: TADelayScanMapV2
+package alias: TADelayScanPlanV2
+package alias: TADelayScanResultV2
 ```
 
-这些 API 不依赖 TA / 2DES / solver / matplotlib，只负责构造一次 concrete
-`FieldPhySeries`。
+这些 API 不依赖 matplotlib，也不把框架写死为 TA / 2DES。除
+`SingleRunPlan.execute()`、`TASingleDelayPlan.execute_pair()` 和
+`ta_recipe_v2.TADelayScanPlan.execute()` 这些显式执行入口会调用
+`run_case` 外，其余 helper 主要负责构造 field、组织 case、验证 axis
+或打包结果。
 
 `FieldPhyRoot` 仍是通用抽象接口；`CarrierEnvelopeField` 是当前
 phase-aware workflow 的首个正式支持 backend。它提供：
@@ -509,16 +573,125 @@ phase 约定。
 - `energy_eV`；
 - 可选 `omega_fs_inv`。
 
-它只打包单条 response，不做 subtraction、不做 phase projection、不假设
-delay scan。
+它只打包单条 response，不做 subtraction、不做 phase projection。
 
-当前 TA recipe v2 minimal scaffold 不实现：
+`TASingleDelayPlan` 与 `extract_ta_absorption_bundle(...)` 本身不做
+subtraction；subtraction 由 Milestone 5.2 的 `compute_ta_contrast(...)`
+显式完成。
 
-- TA subtraction；
-- delay scan；
+当前单 delay scaffold 本身不实现：
+
 - phase-cycling TA；
 - TAResultIO v2；
 - old demo migration。
+
+## Milestone 5.2：TA subtraction 与 energy-axis alignment
+
+当前 `ta_recipe_v2.py` 已支持单 delay TA contrast：
+
+```text
+TASingleDelayPlan
+-> execute_pair()
+-> pump-probe SingleRunPlan.execute()
+-> probe-only SingleRunPlan.execute()
+-> extract_ta_absorption_bundle()
+-> compute_ta_contrast()
+-> TAContrastResult
+```
+
+subtraction convention 固定为：
+
+```text
+S_TA(omega, delay) = S_pump_probe(omega, delay) - S_probe_only(omega)
+```
+
+当前不做 sign flip，不做 OD / delta OD 转换，不做 relative difference，不做
+normalization variants。
+
+`TASubtractionSpec` 只控制：
+
+- output signal name；
+- energy / omega axis validation tolerance；
+- 是否验证 `omega_fs_inv` axis。
+
+axis policy：
+
+- `absorption` shape 必须一致；
+- `energy_eV` shape 必须一致，且 `np.allclose`；
+- 如果 `validate_omega_axis=True`，两边 `omega_fs_inv` 要么都不存在，要么
+  shape 一致且 `np.allclose`；
+- 如果 `validate_omega_axis=False`，不验证 omega axis，并优先沿用
+  pump-probe bundle 的 `omega_fs_inv`；
+- 当前不插值、不重采样、不平滑、不静默截断。
+
+`TAContrastResult` 保存单 delay 的：
+
+- `delta_absorption`；
+- `energy_eV`；
+- 可选 `omega_fs_inv`；
+- subtraction spec summary；
+- source case names；
+- axis validation metadata。
+
+当前 Milestone 5.2 的单 delay subtraction 本身不实现：
+
+- phase-cycling TA；
+- TAResultIO v2；
+- old demo migration。
+
+## Milestone 5.3：TA delay scan scaffold
+
+当前 `ta_recipe_v2.py` 已支持最小 TA delay scan scaffold：
+
+```text
+TADelayScanPlan
+-> make_single_delay_plans()
+-> 每个 delay 执行 TASingleDelayPlan.execute_pair()
+-> TASingleDelayPairResult.compute_contrast()
+-> build_ta_delay_scan_map()
+-> TADelayScanResult
+```
+
+当前支持范围：
+
+- 单 delay pump-probe / probe-only 编排；
+- 单 delay `S_TA = S_pump_probe - S_probe_only` contrast；
+- 多 delay scaffold；
+- 将多个单 delay contrast 堆叠为 delay × energy map；
+- fake executor 测试入口，用于不触发 solver 的 scan 级验证。
+
+delay / axis policy：
+
+- delay 轴严格保留输入顺序；
+- 不按 delay 数值排序；
+- 每个 delay 的 `energy_eV` shape 必须一致；
+- 每个 delay 的 `energy_eV` 数值必须 `np.allclose`；
+- 默认要求每个 delay 的 `omega_fs_inv` 要么都存在且一致，要么都不存在；
+- 如果 `validate_omega_axis=False`，不验证 omega 轴，并沿用第一个
+  contrast 的 `omega_fs_inv`；
+- 当前不做 interpolation、resampling、smoothing、截断或自动修轴。
+
+`TADelayScanMap` 保存：
+
+- `delays_fs`；
+- `energy_eV`；
+- `delta_absorption`，shape 为 `n_delay × n_energy`；
+- 可选 `omega_fs_inv`；
+- source contrast case names；
+- axis validation metadata。
+
+`TADelayScanPlan` 仍拒绝 `checkpoint.enabled=True`，避免多个 delay case
+默认复用同一个 checkpoint 路径导致覆盖或误读。当前 scaffold 不保存大输出。
+
+当前 Milestone 5.3 仍不实现：
+
+- phase-cycling TA；
+- TAResultIO v2；
+- old demo migration；
+- plotting；
+- npz / csv export；
+- interpolation / resampling；
+- OD / delta OD / relative difference / normalization variants。
 
 ## Migration plan
 
@@ -582,20 +755,37 @@ delay scan。
 - 已支持生成单 delay 的 pump-probe `SingleRunPlan`；
 - 已支持生成单 delay 的 probe-only `SingleRunPlan`；
 - 默认 readout 是 probe-channel absorption-like readout；
-- 未实现 TA subtraction、delay scan、phase-cycling TA 或 TAResultIO v2。
+- 此阶段未实现 TA subtraction、delay scan、phase-cycling TA 或 TAResultIO v2。
 
-### Milestone 5.2：TA subtraction 与 energy-axis alignment
+### Milestone 5.2：已完成低风险 TA subtraction 与 energy-axis alignment
 
-- 定义 `TASubtractionSpec`；
-- 定义 `TAContrastResult`；
-- 实现 `S_TA = S_pump_probe - S_probe_only`；
-- 验证 pump-probe / probe-only 的 energy axis 对齐。
+- 已实现 `TASubtractionSpec`；
+- 已实现 `TAContrastResult`；
+- 已实现 `validate_ta_readout_bundle_axes`；
+- 已实现 `compute_ta_contrast`；
+- 已支持 `TASingleDelayPairResult.compute_contrast()`；
+- 已固定 `S_TA = S_pump_probe - S_probe_only`；
+- 已验证 pump-probe / probe-only 的 energy axis 对齐；
+- 已新增单 delay TA execute smoke；
+- 此阶段未实现 delay scan、phase-cycling TA、TAResultIO v2、OD/relative
+  difference、interpolation 或 resampling。
 
-### Milestone 5.3：TA delay scan
+### Milestone 5.3：已完成低风险 TA delay scan scaffold
 
-- 对多个 delay 生成 `TASingleDelayPlan`；
-- 收集 delay-energy map；
-- 不改变 single-run / solver 行为。
+- 已实现 `TADelayScanMap`；
+- 已实现 `validate_ta_contrast_axes_for_scan`；
+- 已实现 `build_ta_delay_scan_map`；
+- 已实现 `TADelayScanPlan`；
+- 已实现 `TADelayScanResult`；
+- 已支持对多个 delay 生成 `TASingleDelayPlan`；
+- 已支持收集 delay-energy map；
+- delay 输入顺序保留，不排序；
+- 所有 delay 的 energy axis 必须对齐；
+- checkpoint enabled 时有明确 guard；
+- 已支持 fake executor 测试，不要求默认运行真实 multi-delay solver scan；
+- 不改变 single-run / solver 行为；
+- 未实现 phase-cycling TA、TAResultIO v2、绘图、npz/csv export、旧 demo
+  迁移、OD/ΔOD variants、interpolation 或 resampling。
 
 ### Milestone 5.4：optional phase-cycling TA
 

@@ -7,6 +7,16 @@ TA-specific 语义。它不是 generic pulse-sequence simulation framework，
 cycling。phase cycling 应由上层 wrapper / generic cycler 负责；未来 TA
 recipe v2 可以逐步调用 generic pulse-sequence 基础层。
 
+Legacy / deprecation policy:
+
+- 这是 legacy TA recipe v1 prototype，不是当前 TA recipe v2 主线；
+- 当前保留为 historical reference、IO/export behavior reference、
+  migration comparison 和 regression reference；
+- 新开发应优先使用 ``qudpy_sjh.experiments.pulse_sequence`` 以及
+  ``qudpy_sjh.experiments.ta.ta_recipe_v2``；
+- 本文件不在运行时发 ``DeprecationWarning``，避免污染测试输出；
+- 本轮不删除、不移动、不重构旧文件。
+
 This is the top-level TA orchestration layer.  It owns execution policy,
 checkpoint policy, and default standardized TA output policy.  It does not
 implement piecewise propagation, dark propagation, active/readout windows, or
