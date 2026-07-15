@@ -26,11 +26,15 @@ from .ta_result import (
     TAResultIO,
 )
 from .ta_recipe_v2 import (
+    TAContrastResult,
     TADelayCenters,
     TAReadoutBundle,
+    TASubtractionSpec,
     TASingleDelayPairResult,
     TASingleDelayPlan,
+    compute_ta_contrast,
     extract_ta_absorption_bundle,
+    validate_ta_readout_bundle_axes,
 )
 
 __all__ = [
@@ -53,9 +57,13 @@ __all__ = [
     "TADelayResult",
     "TAResult",
     "TAResultIO",
+    "TAContrastResult",
     "TADelayCenters",
     "TAReadoutBundle",
+    "TASubtractionSpec",
     "TASingleDelayPairResult",
     "TASingleDelayPlan",
+    "compute_ta_contrast",
     "extract_ta_absorption_bundle",
+    "validate_ta_readout_bundle_axes",
 ]
