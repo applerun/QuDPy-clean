@@ -237,7 +237,7 @@ readout/output 层，不属于 bottom-level pulse sequence。
 
 当前阶段不实现：
 
-- phase-cycling TA；
+- phase-cycled TA subtraction / full phase-cycling TA recipe；
 - TAResultIO v2；
 - OD / relative difference / normalization variants；
 - interpolation / resampling / smoothing；
@@ -309,6 +309,10 @@ TASubtractionSpec
 TAContrastResult
 validate_ta_readout_bundle_axes
 compute_ta_contrast
+TAPhaseCyclingSpec
+TAPhaseCycledPumpProbeResult
+build_ta_pump_probe_phase_cycling_plan
+build_ta_phase_cycled_pump_probe_bundle
 ta_recipe_v2.TADelayScanMap
 validate_ta_contrast_axes_for_scan
 build_ta_delay_scan_map
@@ -693,6 +697,61 @@ delay / axis policy：
 - interpolation / resampling；
 - OD / delta OD / relative difference / normalization variants。
 
+## Milestone 5.4：optional pump-probe phase-cycling scaffold
+
+当前 `ta_recipe_v2.py` 已支持可选 pump-probe phase-cycling scaffold：
+
+```text
+TASingleDelayPlan
+-> make_pump_probe_plan()
+-> build_ta_pump_probe_phase_cycling_plan()
+-> PhaseCyclingPlan.execute(...)
+-> build_ta_phase_cycled_pump_probe_bundle()
+-> ProjectedReadoutBundle
+```
+
+当前支持范围：
+
+- 使用 `TAPhaseCyclingSpec` 显式描述 phase grid、target phase vector、
+  projection quantity、projection sign 和 axis metadata；
+- 只对 pump-probe readout quantity 做 Fourier projection；
+- target phase vector 必须由用户或上层 recipe 显式传入；
+- 支持把 `PhaseCyclingResult` 打包为 pump-probe projected readout bundle；
+- 支持 fake executor 测试，不要求默认运行真实 multi-phase solver。
+
+The optional TA phase-cycling scaffold projects the pump-probe readout quantity
+using an explicitly supplied `target_phase_vector`. It does not define a
+universal TA phase convention. A population-like example may use pump net phase
+0 and probe +1, but this remains recipe-level convention, not a bottom-level
+rule.
+
+语义边界：
+
+- no universal TA phase target is hard-coded；
+- `target_phase_vector` 属于 recipe / cycler 层，不属于 `run_case`；
+- `target_phase_vector` 不属于 `DynamicsResult`；
+- readout 不是第三个激发脉冲；
+- 在当前 minimal TA recipe 中，probe 既是 physical probe pulse，也是
+  readout field reference；
+- 本轮不引入 independent LO / readout phase tag；
+- 如果后续显式建模 heterodyne observable，再由 recipe 层定义 LO /
+  readout phase convention。
+
+当前 Milestone 5.4 仍不实现：
+
+- phase-cycled pump-probe minus probe-only subtraction；
+- probe-only phase projection；
+- delay-scan phase cycling；
+- TAResultIO v2；
+- old demo migration；
+- explicit LO/readout phase convention；
+- OD / delta OD / relative difference / normalization variants；
+- interpolation / resampling / smoothing / sign flip。
+
+Phase-cycled TA contrast 保留给后续 recipe-level decision；需要先固定 TA
+phase convention，再决定 probe-only reference 是否参与 projection，以及
+如何与 pump-probe projected signal 相减。
+
 ## Migration plan
 
 ### Milestone 1：已完成
@@ -787,17 +846,37 @@ delay / axis policy：
 - 未实现 phase-cycling TA、TAResultIO v2、绘图、npz/csv export、旧 demo
   迁移、OD/ΔOD variants、interpolation 或 resampling。
 
-### Milestone 5.4：optional phase-cycling TA
+### Milestone 5.4：已完成低风险 optional pump-probe phase-cycling scaffold
 
-- 将 generic `PhaseCyclingPlan` 接入 TA recipe；
-- 固定 TA recipe 的 target phase vector 约定；
-- 不把 phase cycling 设为默认流程。
+- 已实现 `TAPhaseCyclingSpec`；
+- 已实现 `TAPhaseCycledPumpProbeResult`；
+- 已实现 `build_ta_pump_probe_phase_cycling_plan`；
+- 已实现 `build_ta_phase_cycled_pump_probe_bundle`；
+- 已支持从 `TASingleDelayPlan` 构造 pump-probe `PhaseCyclingPlan`；
+- `target_phase_vector` 必须显式传入；
+- 不硬编码 TA phase target vector；
+- 不把 phase cycling 设为默认流程；
+- 当前只 project pump-probe readout；
+- 未实现 phase-cycled TA subtraction、probe-only phase projection、
+  delay-scan phase cycling、TAResultIO v2 或 old demo migration。
 
-### Milestone 5.5：TAResultIO v2 与 demo migration
+### Milestone 5.5：decide TA phase-cycled contrast convention
 
-- 新增 `TAPhaseCyclingRecipe / TAPhaseCyclingResult / TAPhaseCyclingIO`；
-- 复现旧 demo 的 `phase_stack`、`phase_avg`、`phase_rms`、
-  selected-delay spectra、selected-energy kinetics。
+- 固定或继续推迟 TA phase-cycled contrast convention；
+- 决定 probe-only reference 是否参与 phase projection；
+- 明确 pump-probe projected signal 与 reference 的 subtraction 规则。
+
+### Milestone 5.6：TAResultIO v2
+
+- 新增 TA recipe v2 的保存格式；
+- 支持 single-delay contrast、delay scan map 与 optional projected bundle；
+- 不复用 legacy v1 IO 的含义作为隐式默认。
+
+### Milestone 5.7：old demo migration
+
+- 复现旧 demo 的关键输出；
+- 明确 `phase_stack`、`phase_avg`、`phase_rms`、selected-delay spectra、
+  selected-energy kinetics 的 v2 对应关系。
 
 ### Milestone 6：新增 2DES recipe
 

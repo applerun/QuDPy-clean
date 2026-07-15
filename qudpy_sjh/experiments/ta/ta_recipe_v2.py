@@ -26,6 +26,12 @@ from typing import Any
 import numpy as np
 
 from qudpy_sjh.experiments.pulse_sequence import (
+    AxisMetadataSpec,
+    PhaseCyclingPlan,
+    PhaseCyclingResult,
+    PhaseGrid,
+    PhaseProjectionSpec,
+    ProjectedReadoutBundle,
     PulseSequenceSpec,
     PulseSpec,
     ReadoutSpec,
@@ -33,8 +39,9 @@ from qudpy_sjh.experiments.pulse_sequence import (
     SingleRunFieldPlan,
     SingleRunPlan,
     SingleRunResult,
+    build_projected_readout_bundle,
 )
-from qudpy_sjh.experiments.pulse_sequence.pulse_sequence import validate_pulse_name
+from qudpy_sjh.experiments.pulse_sequence.pulse_sequence import validate_phase_tag, validate_pulse_name
 from qudpy_sjh.utils.core import NLevelPhysicalParams, ParaNormalizer
 
 
@@ -267,6 +274,132 @@ class TAContrastResult:
         return payload
 
 
+def _default_ta_phase_axis_specs() -> tuple[AxisMetadataSpec, ...]:
+    return (
+        AxisMetadataSpec(
+            name="energy_eV",
+            quantity="readout.spectrum.energy_eV",
+            source="validate_all_cases",
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class TAPhaseCyclingSpec:
+    """TA recipe v2 的可选 pump-probe phase-cycling 配置。
+
+    当前 scaffold 只对 pump-probe readout quantity 做 phase projection。
+    `target_phase_vector` 必须由用户或上层 recipe 显式传入；这里不定义通用
+    TA phase convention，也不默认使用任何固定 target vector。probe 在当前
+    minimal TA recipe 中仍同时是 physical probe pulse 与 readout field
+    reference；readout / LO 不是第三个激发脉冲。
+    """
+
+    phase_grid: PhaseGrid
+    target_phase_vector: dict[str, int]
+    projection_quantity: str = "readout.spectrum.absorption"
+    signal_name: str = "phase_projected_absorption"
+    axis_specs: tuple[AxisMetadataSpec, ...] = dataclass_field(default_factory=_default_ta_phase_axis_specs)
+    normalize: bool = True
+    sign: int = -1
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.phase_grid, PhaseGrid):
+            raise TypeError("phase_grid must be a PhaseGrid instance.")
+        if not self.target_phase_vector:
+            raise ValueError("target_phase_vector must not be empty.")
+        target: dict[str, int] = {}
+        for key, value in self.target_phase_vector.items():
+            tag = validate_phase_tag(key, allow_none=False)
+            assert tag is not None
+            coefficient = int(value)
+            if float(value) != float(coefficient):
+                raise ValueError(f"target_phase_vector coefficient for {tag!r} must be an integer.")
+            target[tag] = coefficient
+        projection_quantity = str(self.projection_quantity).strip()
+        signal_name = str(self.signal_name).strip()
+        if not projection_quantity:
+            raise ValueError("projection_quantity must not be empty.")
+        if not signal_name:
+            raise ValueError("signal_name must not be empty.")
+        axis_specs = tuple(self.axis_specs)
+        for spec in axis_specs:
+            if not isinstance(spec, AxisMetadataSpec):
+                raise TypeError("axis_specs must contain only AxisMetadataSpec instances.")
+        sign = int(self.sign)
+        if sign not in {-1, 1}:
+            raise ValueError("sign must be +1 or -1.")
+        object.__setattr__(self, "target_phase_vector", target)
+        object.__setattr__(self, "projection_quantity", projection_quantity)
+        object.__setattr__(self, "signal_name", signal_name)
+        object.__setattr__(self, "axis_specs", axis_specs)
+        object.__setattr__(self, "normalize", bool(self.normalize))
+        object.__setattr__(self, "sign", sign)
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "phase_grid": self.phase_grid.to_dict(),
+            "target_phase_vector": dict(self.target_phase_vector),
+            "projection_quantity": self.projection_quantity,
+            "signal_name": self.signal_name,
+            "axis_specs": [spec.to_dict() for spec in self.axis_specs],
+            "normalize": bool(self.normalize),
+            "sign": int(self.sign),
+            "metadata": dict(self.metadata),
+            "ta_phase_cycling_scope": {
+                "scope": "pump_probe_readout_projection_only",
+                "target_phase_vector": "explicit_user_or_recipe_input",
+                "no_universal_ta_phase_convention": True,
+                "no_phase_cycled_ta_subtraction": True,
+            },
+        }
+
+
+@dataclass
+class TAPhaseCycledPumpProbeResult:
+    """单 delay pump-probe phase projection 的结果容器。
+
+    本结果只保存 phase-projected pump-probe readout bundle，不做
+    pump-probe minus probe-only subtraction，不写 TA map，也不保存文件。
+    """
+
+    case_name: str
+    delay_fs: float
+    phase_cycling: TAPhaseCyclingSpec
+    phase_result: PhaseCyclingResult
+    bundle: ProjectedReadoutBundle
+    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.case_name = validate_pulse_name(self.case_name)
+        delay = float(self.delay_fs)
+        if not np.isfinite(delay):
+            raise ValueError("delay_fs must be finite.")
+        if not isinstance(self.phase_cycling, TAPhaseCyclingSpec):
+            raise TypeError("phase_cycling must be a TAPhaseCyclingSpec instance.")
+        if not isinstance(self.phase_result, PhaseCyclingResult):
+            raise TypeError("phase_result must be a PhaseCyclingResult instance.")
+        if not isinstance(self.bundle, ProjectedReadoutBundle):
+            raise TypeError("bundle must be a ProjectedReadoutBundle instance.")
+        self.delay_fs = delay
+        self.metadata = dict(self.metadata)
+
+    def to_dict(self, *, include_arrays: bool = False) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "case_name": self.case_name,
+            "delay_fs": float(self.delay_fs),
+            "phase_cycling": self.phase_cycling.to_dict(),
+            "phase_result": self.phase_result.to_dict(include_arrays=False),
+            "bundle": self.bundle.to_dict(include_arrays=include_arrays),
+            "metadata": dict(self.metadata),
+            "ta_phase_cycling_scope": "pump_probe_projection_only; no TA subtraction",
+        }
+
+
 def validate_ta_readout_bundle_axes(
     pump_probe: TAReadoutBundle,
     probe_only: TAReadoutBundle,
@@ -377,6 +510,89 @@ def compute_ta_contrast(
         probe_only_bundle=probe_only,
         subtraction=local_spec,
         metadata=contrast_metadata,
+    )
+
+
+def build_ta_pump_probe_phase_cycling_plan(
+    ta_plan: "TASingleDelayPlan",
+    *,
+    phase_cycling: TAPhaseCyclingSpec,
+    case_name: str | None = None,
+) -> PhaseCyclingPlan:
+    """为单 delay pump-probe response 构造可选 phase-cycling plan。
+
+    本 helper 只对 pump-probe plan 做 phase cycling；不处理 probe-only
+    reference，不做 TA subtraction，也不保存文件。`target_phase_vector`
+    来自 `phase_cycling`，必须由用户或上层 recipe 显式给出。
+    """
+
+    if not isinstance(ta_plan, TASingleDelayPlan):
+        raise TypeError("ta_plan must be a TASingleDelayPlan instance.")
+    if not isinstance(phase_cycling, TAPhaseCyclingSpec):
+        raise TypeError("phase_cycling must be a TAPhaseCyclingSpec instance.")
+    if ta_plan.checkpoint.enabled:
+        raise ValueError("TA pump-probe phase-cycling scaffold does not support checkpoint.enabled=True.")
+
+    base_plan = ta_plan.make_pump_probe_plan()
+    output_case_name = (
+        f"{ta_plan.case_name}_pump_probe_phase_cycling"
+        if case_name is None
+        else validate_pulse_name(case_name)
+    )
+    projection = PhaseProjectionSpec(
+        quantity=phase_cycling.projection_quantity,
+        normalize=phase_cycling.normalize,
+        sign=phase_cycling.sign,
+        metadata={
+            "ta_context": "pump_probe_phase_cycled",
+            "signal_name": phase_cycling.signal_name,
+        },
+    )
+    return PhaseCyclingPlan(
+        base_plan=base_plan,
+        phase_grid=phase_cycling.phase_grid,
+        target_phase_vector=phase_cycling.target_phase_vector,
+        projection=projection,
+        case_name_template=f"{output_case_name}_phase_{{index:04d}}",
+        metadata={
+            "ta_context": "pump_probe_phase_cycled",
+            "ta_case_name": ta_plan.case_name,
+            "delay": ta_plan.delay.to_dict(),
+            "phase_cycling": phase_cycling.to_dict(),
+            "scope": "pump_probe_only_no_ta_subtraction",
+        },
+    )
+
+
+def build_ta_phase_cycled_pump_probe_bundle(
+    phase_result: PhaseCyclingResult,
+    *,
+    phase_cycling: TAPhaseCyclingSpec,
+    signal_name: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
+) -> ProjectedReadoutBundle:
+    """把 pump-probe phase-cycling result 打包为 projected readout bundle。
+
+    本 helper 不改变 projected signal 数值，不做 probe-only reference，也不做
+    TA subtraction 或 delay scan。
+    """
+
+    if not isinstance(phase_result, PhaseCyclingResult):
+        raise TypeError("phase_result must be a PhaseCyclingResult instance.")
+    if not isinstance(phase_cycling, TAPhaseCyclingSpec):
+        raise TypeError("phase_cycling must be a TAPhaseCyclingSpec instance.")
+    bundle_metadata = {
+        "ta_context": "pump_probe_phase_cycled",
+        "target_phase_vector": dict(phase_cycling.target_phase_vector),
+        "projection_quantity": phase_cycling.projection_quantity,
+        "scope": "pump_probe_only_no_ta_subtraction",
+    }
+    bundle_metadata.update(dict(metadata or {}))
+    return build_projected_readout_bundle(
+        phase_result,
+        signal_name=phase_cycling.signal_name if signal_name is None else signal_name,
+        axis_specs=phase_cycling.axis_specs,
+        metadata=bundle_metadata,
     )
 
 
@@ -753,6 +969,24 @@ class TASingleDelayPlan:
             case_role="probe_only",
         )
 
+    def make_pump_probe_phase_cycling_plan(
+        self,
+        *,
+        phase_cycling: TAPhaseCyclingSpec,
+        case_name: str | None = None,
+    ) -> PhaseCyclingPlan:
+        """构造 pump-probe response 的可选 phase-cycling plan。
+
+        本方法只构造 plan，不执行 solver，不处理 probe-only reference，也不做
+        TA subtraction。
+        """
+
+        return build_ta_pump_probe_phase_cycling_plan(
+            self,
+            phase_cycling=phase_cycling,
+            case_name=case_name,
+        )
+
     def execute_pump_probe(self) -> SingleRunResult:
         return self.make_pump_probe_plan().execute()
 
@@ -1081,6 +1315,8 @@ __all__ = [
     "TAReadoutBundle",
     "TASubtractionSpec",
     "TAContrastResult",
+    "TAPhaseCyclingSpec",
+    "TAPhaseCycledPumpProbeResult",
     "TADelayScanMap",
     "TASingleDelayPlan",
     "TASingleDelayPairResult",
@@ -1089,6 +1325,8 @@ __all__ = [
     "extract_ta_absorption_bundle",
     "validate_ta_readout_bundle_axes",
     "compute_ta_contrast",
+    "build_ta_pump_probe_phase_cycling_plan",
+    "build_ta_phase_cycled_pump_probe_bundle",
     "validate_ta_contrast_axes_for_scan",
     "build_ta_delay_scan_map",
 ]

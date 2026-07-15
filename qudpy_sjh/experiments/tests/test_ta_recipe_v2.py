@@ -5,6 +5,9 @@ import unittest
 import numpy as np
 
 from qudpy_sjh.experiments.pulse_sequence import (
+    PhaseCyclingPlan,
+    PhaseGrid,
+    ProjectedReadoutBundle,
     PulseSpec,
     SingleRunCheckpointSettings,
     SingleRunPlan,
@@ -17,10 +20,14 @@ from qudpy_sjh.experiments.ta import (
     TADelayScanMapV2 as TADelayScanMap,
     TADelayScanPlanV2 as TADelayScanPlan,
     TADelayScanResultV2 as TADelayScanResult,
+    TAPhaseCycledPumpProbeResult,
+    TAPhaseCyclingSpec,
     TAReadoutBundle,
     TASubtractionSpec,
     TASingleDelayPairResult,
     TASingleDelayPlan,
+    build_ta_phase_cycled_pump_probe_bundle,
+    build_ta_pump_probe_phase_cycling_plan,
     build_ta_delay_scan_map,
     compute_ta_contrast,
     extract_ta_absorption_bundle,
@@ -385,6 +392,138 @@ class TASingleDelayPairResultTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "bundle"):
             pair.compute_contrast()
+
+
+class TAPhaseCyclingScaffoldTests(unittest.TestCase):
+    def _phase_grid(self) -> PhaseGrid:
+        return PhaseGrid({"probe": (0.0, 0.5 * np.pi, np.pi, 1.5 * np.pi)})
+
+    def _phase_spec(self) -> TAPhaseCyclingSpec:
+        return TAPhaseCyclingSpec(
+            phase_grid=self._phase_grid(),
+            target_phase_vector={"probe": 1},
+            signal_name="projected_probe_absorption",
+        )
+
+    def test_phase_cycling_spec_validation(self):
+        spec = self._phase_spec()
+        payload = spec.to_dict()
+
+        self.assertEqual(spec.projection_quantity, "readout.spectrum.absorption")
+        self.assertEqual(spec.signal_name, "projected_probe_absorption")
+        self.assertEqual(spec.sign, -1)
+        self.assertTrue(spec.normalize)
+        self.assertEqual([axis.name for axis in spec.axis_specs], ["energy_eV"])
+        self.assertIn("phase_grid", payload)
+        self.assertEqual(payload["target_phase_vector"], {"probe": 1})
+        self.assertEqual(payload["projection_quantity"], "readout.spectrum.absorption")
+        self.assertEqual(payload["signal_name"], "projected_probe_absorption")
+
+        with self.assertRaises(ValueError):
+            TAPhaseCyclingSpec(phase_grid=self._phase_grid(), target_phase_vector={})
+        with self.assertRaises(ValueError):
+            TAPhaseCyclingSpec(phase_grid=self._phase_grid(), target_phase_vector={"probe": 1}, projection_quantity="")
+        with self.assertRaises(ValueError):
+            TAPhaseCyclingSpec(phase_grid=self._phase_grid(), target_phase_vector={"probe": 1}, signal_name="")
+        with self.assertRaises(ValueError):
+            TAPhaseCyclingSpec(phase_grid=self._phase_grid(), target_phase_vector={"probe": 1}, sign=0)
+        with self.assertRaises(TypeError):
+            TAPhaseCyclingSpec(phase_grid="not_a_grid", target_phase_vector={"probe": 1})
+
+    def test_build_pump_probe_phase_cycling_plan(self):
+        ta_plan = _ta_plan()
+        spec = self._phase_spec()
+
+        phase_plan = build_ta_pump_probe_phase_cycling_plan(ta_plan, phase_cycling=spec)
+
+        self.assertIsInstance(phase_plan, PhaseCyclingPlan)
+        self.assertEqual([pulse.name for pulse in phase_plan.base_plan.field_plan.sequence.pulses], ["pump", "probe"])
+        self.assertEqual(phase_plan.target_phase_vector["probe"], 1)
+        self.assertEqual(phase_plan.target_phase_vector["pump"], 0)
+        self.assertEqual(phase_plan.projection.quantity, "readout.spectrum.absorption")
+        self.assertEqual(phase_plan.projection.sign, -1)
+        self.assertTrue(phase_plan.projection.normalize)
+        self.assertEqual(phase_plan.metadata["ta_context"], "pump_probe_phase_cycled")
+
+        method_plan = ta_plan.make_pump_probe_phase_cycling_plan(phase_cycling=spec)
+        self.assertIsInstance(method_plan, PhaseCyclingPlan)
+
+    def test_phase_cycling_plan_checkpoint_guard(self):
+        ta_plan = _ta_plan()
+        ta_plan.checkpoint = SingleRunCheckpointSettings(enabled=True, checkpoint_path="phase_case.ckp")
+
+        with self.assertRaisesRegex(ValueError, "checkpoint"):
+            build_ta_pump_probe_phase_cycling_plan(ta_plan, phase_cycling=self._phase_spec())
+
+    def test_build_phase_cycled_pump_probe_bundle(self):
+        ta_plan = _ta_plan()
+        spec = self._phase_spec()
+        phase_plan = build_ta_pump_probe_phase_cycling_plan(ta_plan, phase_cycling=spec)
+        base_signal = np.asarray([1.0, 2.0, 3.0], dtype=np.complex128)
+        energy = np.asarray([1.50, 1.55, 1.60])
+
+        def fake_executor(single_plan: SingleRunPlan) -> SingleRunResult:
+            phase = float(single_plan.field_plan.phase_vector["probe"])
+            return _fake_result(
+                spectrum={
+                    "absorption": np.exp(1j * phase) * base_signal,
+                    "energy_eV": energy,
+                },
+                case_name=single_plan.case_name,
+            )
+
+        phase_result = phase_plan.execute(executor=fake_executor)
+        bundle = build_ta_phase_cycled_pump_probe_bundle(phase_result, phase_cycling=spec)
+
+        self.assertIsInstance(bundle, ProjectedReadoutBundle)
+        self.assertEqual(bundle.signal_name, "projected_probe_absorption")
+        self.assertIn("energy_eV", bundle.axes)
+        np.testing.assert_allclose(bundle.axes["energy_eV"], energy)
+        np.testing.assert_allclose(bundle.projected_signal, base_signal, atol=1.0e-12)
+        np.testing.assert_allclose(bundle.projected_signal, phase_result.projected)
+        self.assertEqual(bundle.metadata["ta_context"], "pump_probe_phase_cycled")
+        self.assertEqual(bundle.metadata["scope"], "pump_probe_only_no_ta_subtraction")
+
+    def test_phase_cycled_pump_probe_result_to_dict(self):
+        ta_plan = _ta_plan()
+        spec = self._phase_spec()
+        phase_plan = build_ta_pump_probe_phase_cycling_plan(ta_plan, phase_cycling=spec)
+
+        def fake_executor(single_plan: SingleRunPlan) -> SingleRunResult:
+            phase = float(single_plan.field_plan.phase_vector["probe"])
+            return _fake_result(
+                spectrum={
+                    "absorption": np.asarray([np.exp(1j * phase)]),
+                    "energy_eV": np.asarray([1.55]),
+                },
+                case_name=single_plan.case_name,
+            )
+
+        phase_result = phase_plan.execute(executor=fake_executor)
+        bundle = build_ta_phase_cycled_pump_probe_bundle(phase_result, phase_cycling=spec)
+        result = TAPhaseCycledPumpProbeResult(
+            case_name="phase_cycled_pump_probe",
+            delay_fs=ta_plan.delay.delay_fs,
+            phase_cycling=spec,
+            phase_result=phase_result,
+            bundle=bundle,
+        )
+
+        summary = result.to_dict(include_arrays=False)
+        full = result.to_dict(include_arrays=True)
+
+        self.assertEqual(summary["delay_fs"], 100.0)
+        self.assertEqual(summary["phase_cycling"]["target_phase_vector"], {"probe": 1})
+        self.assertNotIn("projected_signal", summary["bundle"])
+        self.assertIn("projected_signal", full["bundle"])
+
+    def test_single_delay_plan_does_not_default_to_phase_cycling(self):
+        ta_plan = _ta_plan()
+        pump_probe_plan = ta_plan.make_pump_probe_plan()
+
+        self.assertIsInstance(pump_probe_plan, SingleRunPlan)
+        self.assertNotIsInstance(pump_probe_plan, PhaseCyclingPlan)
+        self.assertNotIn("phase_cycling", pump_probe_plan.field_plan.metadata)
 
 
 class TADelayScanMapTests(unittest.TestCase):
