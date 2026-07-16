@@ -44,6 +44,7 @@ LEGACY_DEMO_PATH = (
     / "ta"
     / "ta_three_level_intrinsic_response_phase_cycling_demo.py"
 )
+TA_MAP_XLIM_EV = (1.40, 1.80)
 
 from qudpy_sjh.experiments.pulse_sequence import AxisMetadataSpec, PhaseGrid, PulseSpec, ReadoutSpec  # noqa: E402
 from qudpy_sjh.experiments.ta import (  # noqa: E402
@@ -769,6 +770,20 @@ def _plot_values(values: np.ndarray) -> np.ndarray:
     return np.asarray(np.real_if_close(values, tol=1000), dtype=float)
 
 
+def _centered_norm(vlim: float):
+    """TA map 使用以 0 为中心的发散色标，保证零信号落在白色中心。"""
+
+    from matplotlib.colors import TwoSlopeNorm
+
+    return TwoSlopeNorm(vmin=-float(vlim), vcenter=0.0, vmax=float(vlim))
+
+
+def _set_ta_map_xlim(ax) -> None:
+    """TA map 横轴固定展示 1.4--1.8 eV。"""
+
+    ax.set_xlim(*TA_MAP_XLIM_EV)
+
+
 def _plot_ta_map(
     plt,
     *,
@@ -787,17 +802,17 @@ def _plot_ta_map(
             vlim = 1.0
     fig, ax = plt.subplots(figsize=(7.0, 4.8))
     mesh = ax.pcolormesh(
-        np.asarray(delays_fs, dtype=float),
         np.asarray(energy_eV, dtype=float),
-        data.T,
+        np.asarray(delays_fs, dtype=float),
+        data,
         shading="auto",
         cmap="RdBu_r",
-        vmin=-float(vlim),
-        vmax=float(vlim),
+        norm=_centered_norm(vlim),
     )
     ax.set_title(title)
-    ax.set_xlabel("delay_fs")
-    ax.set_ylabel("energy_eV")
+    ax.set_xlabel("energy_eV")
+    ax.set_ylabel("delay_fs")
+    _set_ta_map_xlim(ax)
     cbar = fig.colorbar(mesh, ax=ax)
     cbar.set_label("delta_absorption")
     fig.tight_layout()
@@ -1037,11 +1052,19 @@ def _save_comparison_figures(
                 (axes[1], "v2 TA map", v2_values, shared),
                 (axes[2], f"v2 - old, max_abs_diff={np.max(np.abs(diff)):.3e}", diff, diff_vlim),
             ):
-                mesh = ax.pcolormesh(arrays["delays_fs"], arrays["energy_eV"], values.T, shading="auto", cmap="RdBu_r", vmin=-vlim, vmax=vlim)
+                mesh = ax.pcolormesh(
+                    arrays["energy_eV"],
+                    arrays["delays_fs"],
+                    values,
+                    shading="auto",
+                    cmap="RdBu_r",
+                    norm=_centered_norm(vlim),
+                )
                 ax.set_title(title)
-                ax.set_xlabel("delay_fs")
+                ax.set_xlabel("energy_eV")
+                _set_ta_map_xlim(ax)
                 fig.colorbar(mesh, ax=ax)
-            axes[0].set_ylabel("energy_eV")
+            axes[0].set_ylabel("delay_fs")
             fig.tight_layout()
             path = figures_dir / f"compare_ta_maps_old_v2_diff.{suffix}"
             fig.savefig(path)

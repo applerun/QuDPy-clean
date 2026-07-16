@@ -55,6 +55,7 @@ import sys
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import TwoSlopeNorm
 import numpy as np
 
 if __package__ is None or __package__ == "":
@@ -140,8 +141,10 @@ class DemoConfig:
 	zero_padding_factor: int = 4
 
 	plot_energy_range_eV: tuple[float, float] = (1.35, 1.90)
+	# TA map 的展示窗口；谱线图仍使用 plot_energy_range_eV。
+	ta_map_xlim_eV: tuple[float, float] = (1.40, 1.80)
 	plot_use_wavelength: bool = False
-	cmap: str = "plasma"
+	cmap: str = "RdBu_r"
 	figure_dpi: int = 180
 
 	use_checkpoints: bool = True
@@ -674,6 +677,18 @@ def prepare_plot_arrays(
 	return x, plot_values, xlabel
 
 
+def set_ta_map_xlim(ax: plt.Axes, config: DemoConfig) -> None:
+	"""TA map 固定展示 1.4--1.8 eV；波长坐标时换算为对应 nm 范围。"""
+
+	e_min, e_max = config.ta_map_xlim_eV
+	if config.plot_use_wavelength:
+		x_min = HC_EV_NM / e_max
+		x_max = HC_EV_NM / e_min
+		ax.set_xlim(min(x_min, x_max), max(x_min, x_max))
+	else:
+		ax.set_xlim(e_min, e_max)
+
+
 def displayed_energy_map_values(
 		energy_eV: np.ndarray,
 		values: np.ndarray,
@@ -741,13 +756,13 @@ def plot_one_map(
 		plot_values,
 		shading = "auto",
 		cmap = config.cmap,
-		vmin = local_vmin,
-		vmax = local_vmax,
+		norm = TwoSlopeNorm(vmin = local_vmin, vcenter = 0.0, vmax = local_vmax),
 	)
 
 	ax.set_title(title)
 	ax.set_xlabel(xlabel)
 	ax.set_ylabel("Pump-probe delay (fs)")
+	set_ta_map_xlim(ax, config)
 
 	cbar = fig.colorbar(mesh, ax = ax)
 	cbar.set_label(cbar_label)
@@ -802,8 +817,7 @@ def plot_compare(
 				plot_values,
 				shading = "auto",
 				cmap = config.cmap,
-				vmin = -1.0,
-				vmax = 1.0,
+				norm = TwoSlopeNorm(vmin = -1.0, vcenter = 0.0, vmax = 1.0),
 			)
 			ax.text(
 				0.02,
@@ -831,12 +845,12 @@ def plot_compare(
 				plot_values,
 				shading = "auto",
 				cmap = config.cmap,
-				vmin = -float(shared_vlim),
-				vmax = float(shared_vlim),
+				norm = TwoSlopeNorm(vmin = -float(shared_vlim), vcenter = 0.0, vmax = float(shared_vlim)),
 			)
 
 		ax.set_title(title)
 		ax.set_xlabel(xlabel)
+		set_ta_map_xlim(ax, config)
 
 	for ax in axes[:, 0]:
 		ax.set_ylabel("Pump-probe delay (fs)")
