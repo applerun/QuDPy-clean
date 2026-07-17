@@ -20,7 +20,7 @@ import sys
 import time
 from dataclasses import replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -88,8 +88,65 @@ def _with_checkpoint(plan, *, output_dir: Path, case_key: str, config):
     )
 
 
+def _physical_params_compatible(expected, actual) -> tuple[bool, str]:
+    if actual is None:
+        return False, "checkpoint result has no physical_params"
+    scalar_fields = ("t_start_fs", "t_end_fs", "dt_fs")
+    for name in scalar_fields:
+        expected_value = float(getattr(expected, name))
+        actual_value = float(getattr(actual, name))
+        if not np.isclose(expected_value, actual_value, rtol=0.0, atol=1.0e-12):
+            return False, f"{name} mismatch: expected {expected_value:g}, got {actual_value:g}"
+
+    if str(expected.solver_mode) != str(actual.solver_mode):
+        return False, f"solver_mode mismatch: expected {expected.solver_mode!r}, got {actual.solver_mode!r}"
+    if tuple(expected.basis or ()) != tuple(actual.basis or ()):
+        return False, f"basis mismatch: expected {expected.basis!r}, got {actual.basis!r}"
+
+    expected_energy = np.asarray(expected.energies_eV, dtype=float)
+    actual_energy = np.asarray(actual.energies_eV, dtype=float)
+    if expected_energy.shape != actual_energy.shape or not np.allclose(expected_energy, actual_energy, rtol=0.0, atol=1.0e-12):
+        return False, "energies_eV mismatch"
+
+    expected_dipole = np.asarray(expected.dipole_matrix_D, dtype=np.complex128)
+    actual_dipole = np.asarray(actual.dipole_matrix_D, dtype=np.complex128)
+    if expected_dipole.shape != actual_dipole.shape or not np.allclose(expected_dipole, actual_dipole, rtol=0.0, atol=1.0e-12):
+        return False, "dipole_matrix_D mismatch"
+
+    return True, "ok"
+
+
 def _execute_with_checkpoint(plan, *, output_dir: Path, case_key: str, config):
-    return _with_checkpoint(plan, output_dir=output_dir, case_key=case_key, config=config).execute()
+    local_plan = _with_checkpoint(plan, output_dir=output_dir, case_key=case_key, config=config)
+    result = local_plan.execute()
+    if not bool(config.use_checkpoints) or bool(config.force_run):
+        return result
+
+    expected_params = plan.make_params()
+    ok, reason = _physical_params_compatible(expected_params, result.dynamics_result.physical_params)
+    if ok:
+        return result
+
+    checkpoint_path = _checkpoint_path(output_dir, case_key)
+    print(
+        "Incompatible checkpoint loaded; rerunning and overwriting: "
+        f"{checkpoint_path} ({reason})"
+    )
+    rerun_plan = replace(
+        local_plan,
+        checkpoint=replace(local_plan.checkpoint, force_run=True),
+    )
+    return rerun_plan.execute()
+
+
+def _assert_reference_axis(name: str, reference: np.ndarray, current: np.ndarray, *, case_key: str) -> None:
+    try:
+        _assert_same_axis(name, reference, current)
+    except ValueError as exc:
+        raise ValueError(
+            f"{name} axis mismatch after checkpoint validation for case_key={case_key!r}. "
+            "If this persists, remove the output checkpoint directory or rerun with --force-run."
+        ) from exc
 
 
 def _assert_same_axis(name: str, reference: np.ndarray, current: np.ndarray) -> None:
@@ -162,7 +219,16 @@ def _select_delays(config, *, quick: bool, max_delays: int | None) -> tuple[floa
     return delays[: int(max_delays)]
 
 
-def run_v2_legacy_output(args: argparse.Namespace) -> dict[str, Any]:
+BaseParamsBuilder = Callable[[Any, Any, Any, Any], tuple[Any, dict[str, Any]]]
+
+
+def run_v2_legacy_output(
+    args: argparse.Namespace,
+    *,
+    base_params_builder: BaseParamsBuilder | None = None,
+    example_name: str = "ta_three_level_intrinsic_response_phase_cycling_demo_v2_legacy_output",
+    workflow_extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     started = time.perf_counter()
     legacy = _load_module(LEGACY_DEMO_PATH, "ta_phase_cycling_legacy_output_reference")
     smoke_v2 = _load_module(SMOKE_V2_PATH, "ta_phase_cycling_v2_smoke_reference")
@@ -177,7 +243,11 @@ def run_v2_legacy_output(args: argparse.Namespace) -> dict[str, Any]:
     delays_array = np.asarray(delays, dtype=float)
 
     pump, probe = smoke_v2._make_pulses(config)
-    base_params = smoke_v2._make_base_params(config, probe.field_template)
+    builder_metadata: dict[str, Any] = {}
+    if base_params_builder is None:
+        base_params = smoke_v2._make_base_params(config, probe.field_template)
+    else:
+        base_params, builder_metadata = base_params_builder(legacy, smoke_v2, config, probe)
     readout = smoke_v2._make_readout(config)
     normalizer = ParaNormalizer()
 
@@ -254,8 +324,10 @@ def run_v2_legacy_output(args: argparse.Namespace) -> dict[str, Any]:
             if record.single_run_result is None:
                 raise ValueError("PhaseCyclingResult.case_records must store SingleRunResult.")
             spectrum = _read_spectrum(record.single_run_result)
-            _assert_same_axis("energy_eV", energy_eV, spectrum["energy_eV"])
-            _assert_same_axis("omega_fs_inv", omega_fs_inv, spectrum["omega_fs_inv"])
+            phase = float(record.phase_vector["pump"])
+            case_key = _phase_case_key(legacy, phase=phase, delay_fs=float(delay_fs))
+            _assert_reference_axis("energy_eV", energy_eV, spectrum["energy_eV"], case_key=case_key)
+            _assert_reference_axis("omega_fs_inv", omega_fs_inv, spectrum["omega_fs_inv"], case_key=case_key)
             phase_rows[phase_index].append(np.asarray(spectrum["absorption"], dtype=float) - s_probe)
             dyn = record.single_run_result.dynamics_result
             max_trace_error = max(max_trace_error, float(dyn.max_trace_error()))
@@ -538,7 +610,7 @@ def run_v2_legacy_output(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     meta = {
-        "example_name": "ta_three_level_intrinsic_response_phase_cycling_demo_v2_legacy_output",
+        "example_name": example_name,
         "quick": bool(args.quick),
         "output_dir": output_dir,
         "data_npz": npz_path,
@@ -551,7 +623,9 @@ def run_v2_legacy_output(args: argparse.Namespace) -> dict[str, Any]:
             "output_shape": "legacy TA phase-cycling demo output layout",
             "legacy_reference": LEGACY_DEMO_PATH,
             "smoke_reference": SMOKE_V2_PATH,
+            **dict(workflow_extra or {}),
         },
+        "base_params_builder": builder_metadata,
         "checkpoint": {
             "enabled": bool(config.use_checkpoints),
             "force_run": bool(config.force_run),
@@ -628,6 +702,7 @@ def run_v2_legacy_output(args: argparse.Namespace) -> dict[str, Any]:
         "stats_json": str(stats_json),
         "meta_json": str(meta_path),
         "figures": figure_paths,
+        "base_params_builder": builder_metadata,
     }
 
 

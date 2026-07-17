@@ -850,6 +850,7 @@ def _save_v2_figures(payload: dict[str, Any], out_dir: Path, *, figure_format: s
     ax.set_title("v2 selected delay spectra")
     ax.set_xlabel("energy_eV")
     ax.set_ylabel("delta_absorption")
+    _set_ta_map_xlim(ax)
     ax.legend(fontsize=8)
     fig.tight_layout()
     path = figures_dir / f"v2_selected_delay_spectra.{suffix}"
@@ -862,6 +863,7 @@ def _save_v2_figures(payload: dict[str, Any], out_dir: Path, *, figure_format: s
     ax.set_title("v2 probe-only spectrum")
     ax.set_xlabel("energy_eV")
     ax.set_ylabel("probe_only_absorption")
+    _set_ta_map_xlim(ax)
     fig.tight_layout()
     path = figures_dir / f"v2_probe_only_spectrum.{suffix}"
     fig.savefig(path)
@@ -878,6 +880,7 @@ def _save_v2_figures(payload: dict[str, Any], out_dir: Path, *, figure_format: s
     ax.set_title("v2 phase-averaged pump-probe spectra")
     ax.set_xlabel("energy_eV")
     ax.set_ylabel("phase_averaged_pump_probe_absorption")
+    _set_ta_map_xlim(ax)
     ax.legend(fontsize=8)
     fig.tight_layout()
     path = figures_dir / f"v2_phase_averaged_pump_probe_spectra.{suffix}"
@@ -1081,6 +1084,7 @@ def _save_comparison_figures(
                 ax.set_title(f"delay={arrays['delays_fs'][delay_index]:g} fs\nmax_abs_diff={local_diff:.3e}")
                 ax.set_xlabel("energy_eV")
                 ax.set_ylabel("delta_absorption")
+                _set_ta_map_xlim(ax)
                 ax.legend(fontsize=8)
             fig.tight_layout()
             path = figures_dir / f"compare_selected_delay_spectra_overlay.{suffix}"
@@ -1098,6 +1102,7 @@ def _save_comparison_figures(
             ax.set_title("probe-only spectrum overlay")
             ax.set_xlabel("energy_eV")
             ax.set_ylabel("probe_only_absorption")
+            _set_ta_map_xlim(ax)
             ax.legend()
             fig.tight_layout()
             path = figures_dir / f"compare_probe_only_spectrum_overlay.{suffix}"

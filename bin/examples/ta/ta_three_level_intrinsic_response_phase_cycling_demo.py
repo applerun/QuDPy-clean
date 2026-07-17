@@ -678,7 +678,7 @@ def prepare_plot_arrays(
 
 
 def set_ta_map_xlim(ax: plt.Axes, config: DemoConfig) -> None:
-	"""TA map 固定展示 1.4--1.8 eV；波长坐标时换算为对应 nm 范围。"""
+	"""TA 图和谱线图固定展示 1.4--1.8 eV；波长坐标时换算为对应 nm 范围。"""
 
 	e_min, e_max = config.ta_map_xlim_eV
 	if config.plot_use_wavelength:
@@ -1046,6 +1046,7 @@ def plot_selected_delay_phase_spectra(
 		ax.set_xlabel(xlabel)
 		ax.set_ylabel("S_TA (arb., current sign)")
 		ax.set_ylim(-y_lim, y_lim)
+		set_ta_map_xlim(ax, config)
 
 		finite = y_plot[np.isfinite(y_plot)]
 		if finite.size:
@@ -1159,6 +1160,7 @@ def plot_selected_delay_phase_spectra_overlay(
 	ax_avg.set_xlabel(xlabel_ref)
 	ax_avg.set_ylabel("Phase-averaged S_TA", color = "black")
 	ax_phase.set_ylabel("Single-phase S_TA", color = "red")
+	set_ta_map_xlim(ax_avg, config)
 
 	ax_avg.tick_params(axis = "y", labelcolor = "black")
 	ax_phase.tick_params(axis = "y", labelcolor = "red")
@@ -1259,6 +1261,7 @@ def plot_selected_delay_mean_spectrum(
 	ax.set_title(f"Phase-averaged TA spectrum at delay = {delay_fs:g} fs")
 	ax.set_xlabel(xlabel_ref)
 	ax.set_ylabel("Phase-averaged S_TA")
+	set_ta_map_xlim(ax, config)
 
 	finite = avg_spectrum[np.isfinite(avg_spectrum)]
 	if finite.size:
