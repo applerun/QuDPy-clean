@@ -1,0 +1,19 @@
+{
+  "name": "eid_eis_pb_factorial",
+  "baseline": {
+    "eis_eV": 0.0,
+    "pb": 1.0,
+    "eid": 1.0
+  },
+  "combination_rule": "cartesian",
+  "include_baseline": true,
+  "name_style": "changed_flags",
+  "axes": {
+    "eis_eV": [0.0, -0.02],
+    "pb": [1.0, 0.99],
+    "eid": [1.0, 1.1]
+  },
+  "metadata": {
+    "description": "EIS/PB/EID 2^3 on-off factorial experiment"
+  }
+}

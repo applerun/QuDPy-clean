@@ -1,0 +1,19 @@
+{
+  "name": "eid_eis_pb_one_dim_scan",
+  "baseline": {
+    "eis_eV": 0.0,
+    "pb": 1.0,
+    "eid": 1.0
+  },
+  "combination_rule": "one_at_a_time",
+  "include_baseline": false,
+  "name_style": "axis_value",
+  "axes": {
+    "pb": [0.7, 0.8, 0.9, 0.95, 0.99],
+    "eid": [1.1, 1.3, 1.5],
+    "eis_eV": [0.01, 0.02, 0.05, 0.1]
+  },
+  "metadata": {
+    "description": "Independent one-dimensional scans around the harmonic baseline"
+  }
+}
