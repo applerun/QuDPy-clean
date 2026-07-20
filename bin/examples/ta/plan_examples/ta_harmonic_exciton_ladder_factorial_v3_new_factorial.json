@@ -1,0 +1,19 @@
+{
+  "name": "harmonic_exciton_ladder_factorial_v3_new_factorial",
+  "baseline": {
+    "eis_eV": 0.0,
+    "pb": 1.0,
+    "eid": 1.0
+  },
+  "combination_rule": "cartesian",
+  "include_baseline": false,
+  "name_style": "axis_value",
+  "axes": {
+    "eis_eV": [0.01],
+    "pb": [1.0, 0.9, 0.7],
+    "eid": [1.0, 1.1, 1.5]
+  },
+  "metadata": {
+    "description": "Factorial run requested for v3: fixed EIS=0.01 eV with PB and EID level combinations."
+  }
+}

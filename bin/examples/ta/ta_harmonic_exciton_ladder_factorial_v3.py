@@ -46,6 +46,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "bin" / "optical_bloch_plots" / "ta_harmonic_exciton_ladder_factorial_v2"
+DEFAULT_NEW_FACTORIAL_OUTPUT_DIR = (
+    REPO_ROOT / "bin" / "optical_bloch_plots" / "ta_harmonic_exciton_ladder_factorial_v3_new_factorial"
+)
+PLAN_EXAMPLES_DIR = Path(__file__).resolve().parent / "plan_examples"
+DEFAULT_CLICK_RUN_PLAN = PLAN_EXAMPLES_DIR / "ta_harmonic_exciton_ladder_factorial_v3_new_factorial.json"
 PHASE_VALUES_RAD = (0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi)
 TARGET_PHASE_VECTOR = {"pump": 0}
 TA_MAP_XLIM_EV = (1.40, 1.80)
@@ -107,6 +112,10 @@ class FactorialCase:
     eid: float
 
 
+def _load_json(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _json_safe(value: Any) -> Any:
     if hasattr(value, "to_dict") and callable(value.to_dict):
         return _json_safe(value.to_dict())
@@ -164,6 +173,109 @@ def build_case_config(settings: FactorialSettings) -> list[FactorialCase]:
         eis = float(value)
         cases.append(FactorialCase(f"EIS_{eis:.2f}", True, False, False, eis, 1.0, 1.0))
     return cases
+
+
+def build_case_config_from_plan(plan: dict[str, Any]) -> list[FactorialCase]:
+    baseline_raw = plan.get("baseline", {})
+    baseline = {
+        "eis_eV": float(baseline_raw.get("eis_eV", 0.0)),
+        "pb": float(baseline_raw.get("pb", 1.0)),
+        "eid": float(baseline_raw.get("eid", 1.0)),
+    }
+    axes_raw = plan.get("axes")
+    if not isinstance(axes_raw, dict) or not axes_raw:
+        raise ValueError("Plan JSON must contain a non-empty 'axes' object.")
+
+    axes = {
+        str(name): [float(value) for value in values]
+        for name, values in axes_raw.items()
+    }
+    supported_axes = {"eis_eV", "pb", "eid"}
+    unknown_axes = sorted(set(axes) - supported_axes)
+    if unknown_axes:
+        raise ValueError(f"Unsupported plan axes: {unknown_axes}")
+
+    combination_rule = str(plan.get("combination_rule", "cartesian"))
+    if combination_rule != "cartesian":
+        raise ValueError(f"Unsupported factorial plan combination_rule: {combination_rule!r}")
+
+    include_baseline = bool(plan.get("include_baseline", False))
+    name_style = str(plan.get("name_style", "axis_value"))
+
+    axis_names = [name for name in ("eis_eV", "pb", "eid") if name in axes]
+    cases: list[FactorialCase] = []
+    seen_names: set[str] = set()
+
+    if include_baseline:
+        cases.append(FactorialCase("harmonic_control", False, False, False, baseline["eis_eV"], baseline["pb"], baseline["eid"]))
+        seen_names.add("harmonic_control")
+
+    def add_case(values_by_axis: dict[str, float]) -> None:
+        values = dict(baseline)
+        values.update(values_by_axis)
+        flags = {
+            "EIS_on": not math.isclose(values["eis_eV"], baseline["eis_eV"], rel_tol=0.0, abs_tol=1.0e-15),
+            "PB_on": not math.isclose(values["pb"], baseline["pb"], rel_tol=0.0, abs_tol=1.0e-15),
+            "EID_on": not math.isclose(values["eid"], baseline["eid"], rel_tol=0.0, abs_tol=1.0e-15),
+        }
+        name = _case_name_from_plan_values(values, flags, baseline=baseline, name_style=name_style)
+        if name in seen_names:
+            suffix = 2
+            base_name = name
+            while f"{base_name}_{suffix}" in seen_names:
+                suffix += 1
+            name = f"{base_name}_{suffix}"
+        seen_names.add(name)
+        cases.append(
+            FactorialCase(
+                name,
+                flags["EIS_on"],
+                flags["PB_on"],
+                flags["EID_on"],
+                values["eis_eV"],
+                values["pb"],
+                values["eid"],
+            )
+        )
+
+    def walk(index: int, values_by_axis: dict[str, float]) -> None:
+        if index == len(axis_names):
+            add_case(values_by_axis)
+            return
+        axis_name = axis_names[index]
+        for value in axes[axis_name]:
+            local_values = dict(values_by_axis)
+            local_values[axis_name] = float(value)
+            walk(index + 1, local_values)
+
+    walk(0, {})
+    return cases
+
+
+def _case_name_from_plan_values(
+    values: dict[str, float],
+    flags: dict[str, bool],
+    *,
+    baseline: dict[str, float],
+    name_style: str,
+) -> str:
+    if name_style == "changed_flags":
+        parts = [label for label, enabled in (("EIS", flags["EIS_on"]), ("PB", flags["PB_on"]), ("EID", flags["EID_on"])) if enabled]
+        return "_".join(parts) if parts else "harmonic_control"
+    if name_style != "axis_value":
+        raise ValueError(f"Unsupported plan name_style: {name_style!r}")
+    return "_".join(
+        (
+            f"EIS_{_float_label(values['eis_eV'])}eV",
+            f"PB_{_float_label(values['pb'])}",
+            f"EID_{_float_label(values['eid'])}",
+        )
+    )
+
+
+def _float_label(value: float) -> str:
+    text = f"{float(value):.12g}"
+    return text.replace("-", "m").replace(".", "p")
 
 
 def make_system_for_case(case: FactorialCase, settings: FactorialSettings):
@@ -1009,11 +1121,14 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     normalizer = ParaNormalizer()
     delays_fs = _selected_delays(settings, quick=bool(args.quick))
+    plan_path = getattr(args, "plan_json", None)
+    plan = _load_json(Path(plan_path).resolve()) if plan_path is not None else None
+    cases = build_case_config_from_plan(plan) if plan is not None else build_case_config(settings)
 
     case_results = []
     case_entries = []
     force_rerun = bool(getattr(args, "force_rerun", False) or getattr(args, "force", False))
-    for case in build_case_config(settings):
+    for case in cases:
         case_dir = output_dir / _case_output_dir_name(case)
         saved_npz = _saved_npz_path(case_dir)
         loaded_from_saved_data = bool(
@@ -1065,6 +1180,8 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
             "output_dir": case_dir,
             "quick": bool(args.quick),
             "settings": asdict(settings),
+            "plan_json": str(Path(plan_path).resolve()) if plan_path is not None else None,
+            "plan": plan,
             "phase_values_rad": list(PHASE_VALUES_RAD),
             "target_phase_vector": dict(TARGET_PHASE_VECTOR),
             "workflow": {
@@ -1123,6 +1240,8 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
         "output_dir": output_dir,
         "quick": bool(args.quick),
         "settings": asdict(settings),
+        "plan_json": str(Path(plan_path).resolve()) if plan_path is not None else None,
+        "plan": plan,
         "delays_fs": delays_fs,
         "phase_values_rad": list(PHASE_VALUES_RAD),
         "target_phase_vector": dict(TARGET_PHASE_VECTOR),
@@ -1163,6 +1282,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--quick", action="store_true", help="Use short time grid and one selected delay.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Output directory.")
+    parser.add_argument("--plan-json", type=Path, default=None, help="Factorial case plan JSON.")
     parser.add_argument("--force-rerun", action="store_true", help="Ignore saved per-case NPZ data and rerun simulations.")
     parser.add_argument("--force", action="store_true", help="Alias for --force-rerun.")
     parser.add_argument("--no-plots", action="store_true", help="Skip per-case PNG plots.")
@@ -1180,5 +1300,27 @@ def main() -> None:
     run_factorial(parse_args())
 
 
+def main_new_factorial_plan() -> None:
+    args = argparse.Namespace(
+        quick=False,
+        output_dir=DEFAULT_NEW_FACTORIAL_OUTPUT_DIR,
+        plan_json=DEFAULT_CLICK_RUN_PLAN,
+        force_rerun=False,
+        force=False,
+        no_plots=False,
+        case_mode="factorial",
+        eis_eV=0.01,
+        pb=1.0,
+        eid=1.0,
+        pb_scan=[1.0, 0.9, 0.7],
+        eid_scan=[1.0, 1.1, 1.5],
+        eis_scan_eV=[0.01],
+    )
+    run_factorial(args)
+
+
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1:
+        main()
+    else:
+        main_new_factorial_plan()
