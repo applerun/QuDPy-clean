@@ -7,35 +7,56 @@ transition dephasing 以及用户手动追加的 dissipation channels。
 
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field as dataclass_field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from qudpy_sjh.utils.serialization import json_safe, write_json
 
-def _json_safe(value: Any) -> Any:
-    if hasattr(value, "to_dict") and callable(value.to_dict):
-        return _json_safe(value.to_dict())
-    if hasattr(value, "__dataclass_fields__"):
-        return _json_safe(asdict(value))
+
+def _decode_complex_values(value: Any) -> Any:
+    if (
+        isinstance(value, dict)
+        and set(value) == {"real", "imag"}
+        and all(isinstance(value[key], (int, float)) for key in ("real", "imag"))
+    ):
+        return complex(value["real"], value["imag"])
     if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, np.ndarray):
-        return _json_safe(value.tolist())
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, complex):
-        return {"real": float(value.real), "imag": float(value.imag)}
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, (str, int, float, bool)) or value is None:
+        return {key: _decode_complex_values(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_complex_values(item) for item in value]
+    return value
+
+
+def _dissipation_to_payload(value: Any) -> Any:
+    from qudpy_sjh.utils.core.parameters import PureDephasingChannel, RelaxationChannel
+
+    if isinstance(value, (RelaxationChannel, PureDephasingChannel)):
+        return {
+            "class": type(value).__name__,
+            "parameters": json_safe(asdict(value)),
+        }
+    return json_safe(value)
+
+
+def _dissipation_from_payload(value: Any) -> Any:
+    if not isinstance(value, dict):
         return value
-    return {
-        "type": f"{value.__class__.__module__}.{value.__class__.__name__}",
-    }
+
+    class_name = value.get("class")
+    parameters = value.get("parameters")
+    if class_name == "RelaxationChannel" and isinstance(parameters, dict):
+        from qudpy_sjh.utils.core.parameters import RelaxationChannel
+
+        return RelaxationChannel(**parameters)
+    if class_name == "PureDephasingChannel" and isinstance(parameters, dict):
+        from qudpy_sjh.utils.core.parameters import PureDephasingChannel
+
+        return PureDephasingChannel(**parameters)
+    return value
 
 
 def _normalize_basis(basis: Sequence[str]) -> tuple[str, ...]:
@@ -191,6 +212,7 @@ class NLevelSystem:
         nonzero_dipoles = int(np.count_nonzero(np.abs(self.dipole_matrix_D) > 0.0))
         summary: dict[str, Any] = {
             "class": self.__class__.__name__,
+            "schema_version": 1,
             "name": self.name,
             "dimension": self.dimension,
             "basis": list(self.basis),
@@ -198,7 +220,7 @@ class NLevelSystem:
             "n_nonzero_dipoles": nonzero_dipoles,
             "n_transition_dephasing": len(self.transition_dephasing_fs_inv),
             "n_dissipation_channels": len(self.dissipation),
-            "metadata": _json_safe(self.metadata),
+            "metadata": json_safe(self.metadata),
         }
         if not include_arrays:
             return summary
@@ -208,7 +230,7 @@ class NLevelSystem:
             {
                 "energies_eV": self.energies_eV.tolist(),
                 "dipole_matrix_D": self.dipole_matrix_D.tolist(),
-                "initial_state": None if self.initial_state is None else _json_safe(self.initial_state),
+                "initial_state": None if self.initial_state is None else json_safe(self.initial_state),
                 "transition_dephasing_fs_inv": [
                     {
                         "from": left,
@@ -217,7 +239,79 @@ class NLevelSystem:
                     }
                     for (left, right), gamma in self.transition_dephasing_fs_inv.items()
                 ],
-                "dissipation": [_json_safe(item) for item in self.dissipation],
+                "dissipation": [_dissipation_to_payload(item) for item in self.dissipation],
             }
         )
         return payload
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "NLevelSystem":
+        """Rebuild a system from ``to_dict(include_arrays=True)`` output."""
+
+        required = ("name", "basis", "energies_eV", "dipole_matrix_D")
+        missing = [key for key in required if key not in payload]
+        if missing:
+            raise ValueError(
+                "NLevelSystem.from_dict requires a full array payload; "
+                f"missing fields: {missing}. Use to_dict(include_arrays=True)."
+            )
+
+        transition_records = payload.get("transition_dephasing_fs_inv", ())
+        if isinstance(transition_records, Mapping):
+            transition_dephasing = dict(transition_records)
+        else:
+            transition_dephasing = {}
+            for index, record in enumerate(transition_records):
+                if not isinstance(record, Mapping):
+                    raise TypeError(
+                        "transition_dephasing_fs_inv records must be mappings; "
+                        f"record {index} is {type(record).__name__}."
+                    )
+                try:
+                    key = (str(record["from"]), str(record["to"]))
+                    transition_dephasing[key] = float(record["gamma_fs_inv"])
+                except KeyError as exc:
+                    raise ValueError(
+                        "Each transition_dephasing_fs_inv record requires "
+                        "'from', 'to', and 'gamma_fs_inv'."
+                    ) from exc
+
+        initial_raw = payload.get("initial_state")
+        initial_state = (
+            None
+            if initial_raw is None
+            else np.asarray(_decode_complex_values(initial_raw))
+        )
+        dissipation_raw = payload.get("dissipation", ())
+        if not isinstance(dissipation_raw, (list, tuple)):
+            raise TypeError("dissipation must be a JSON array.")
+
+        return cls(
+            name=str(payload["name"]),
+            basis=tuple(str(item) for item in payload["basis"]),
+            energies_eV=np.asarray(payload["energies_eV"], dtype=float),
+            dipole_matrix_D=np.asarray(payload["dipole_matrix_D"], dtype=float),
+            initial_state=initial_state,
+            transition_dephasing_fs_inv=transition_dephasing,
+            dissipation=tuple(
+                _dissipation_from_payload(item) for item in dissipation_raw
+            ),
+            metadata=dict(payload.get("metadata", {})),
+        )
+
+    def save_json(self, path: str | Path) -> Path:
+        """Save a complete, rebuildable system definition as UTF-8 JSON."""
+
+        return write_json(path, self.to_dict(include_arrays=True))
+
+    @classmethod
+    def load_json(cls, path: str | Path) -> "NLevelSystem":
+        """Load a system written by :meth:`save_json`."""
+
+        input_path = Path(path)
+        payload = json.loads(input_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError(
+                f"NLevelSystem JSON root must be an object, got {type(payload).__name__}."
+            )
+        return cls.from_dict(payload)

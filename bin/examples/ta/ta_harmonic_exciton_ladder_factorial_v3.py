@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Harmonic exciton ladder TA v2 factorial sanity-check demo.
+"""Harmonic exciton ladder TA v3 factorial sanity-check demo.
 
 本脚本是 systems maker + TA v2 phase-cycling pipeline 的 harmonic
 sanity-check demo，不是正式 TAResultIO，也不是旧 TA demo 的替代品。
@@ -45,9 +45,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "bin" / "optical_bloch_plots" / "ta_harmonic_exciton_ladder_factorial_v2"
+DEFAULT_OUTPUT_DIR = REPO_ROOT / "bin" / "optical_bloch_plots" / "ta_harmonic_exciton_ladder_factorial_v3"
 DEFAULT_NEW_FACTORIAL_OUTPUT_DIR = (
-    REPO_ROOT / "bin" / "optical_bloch_plots" / "ta_harmonic_exciton_ladder_factorial_v3_new_factorial"
+    REPO_ROOT
+    / "bin"
+    / "optical_bloch_plots"
+    / "ta_harmonic_exciton_ladder_factorial_v3_eis_scan_split_subcases"
 )
 PLAN_EXAMPLES_DIR = Path(__file__).resolve().parent / "plan_examples"
 DEFAULT_CLICK_RUN_PLAN = PLAN_EXAMPLES_DIR / "ta_harmonic_exciton_ladder_factorial_v3_new_factorial.json"
@@ -66,6 +69,7 @@ from qudpy_sjh.systems import make_base_physical_params_from_system, make_single
 from qudpy_sjh.utils.constants import HC_EV_NM  # noqa: E402
 from qudpy_sjh.utils.core import ParaNormalizer, PureDephasingChannel  # noqa: E402
 from qudpy_sjh.utils.fields.carrier_envelope import make_gaussian_carrier_envelope_field  # noqa: E402
+from qudpy_sjh.utils.serialization import write_json as _write_json  # noqa: E402
 
 
 @dataclass(frozen=True)
@@ -79,7 +83,7 @@ class FactorialSettings:
     eid_on: float = 1.1
     pb_scan: tuple[float, ...] = (0.7, 0.8, 0.9, 0.95, 0.99)
     eid_scan: tuple[float, ...] = (1.1, 1.3, 1.5)
-    eis_scan_eV: tuple[float, ...] = (0.01, 0.02, 0.05, 0.1)
+    eis_scan_eV: tuple[float, ...] = (-0.01, 0.0, 0.01)
     pump_E0_MV_per_cm: float = 0.30
     probe_E0_MV_per_cm: float = 0.008
     pump_laser_energy_eV: float = 1.55
@@ -114,32 +118,6 @@ class FactorialCase:
 
 def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
-
-
-def _json_safe(value: Any) -> Any:
-    if hasattr(value, "to_dict") and callable(value.to_dict):
-        return _json_safe(value.to_dict())
-    if hasattr(value, "__dataclass_fields__"):
-        return _json_safe(asdict(value))
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, np.ndarray):
-        return _json_safe(value.tolist())
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, complex):
-        return {"real": float(value.real), "imag": float(value.imag)}
-    if isinstance(value, Path):
-        return str(value)
-    return value
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> Path:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_json_safe(payload), indent=2, ensure_ascii=False), encoding="utf-8")
-    return path
 
 
 def build_case_config(settings: FactorialSettings) -> list[FactorialCase]:
@@ -382,21 +360,30 @@ def _make_readout(settings: FactorialSettings) -> ReadoutSpec:
     )
 
 
-def save_case_spectrum_csv(path: Path, *, energy_eV: np.ndarray, ta_signal: np.ndarray) -> Path:
+def save_case_spectrum_csv(
+    path: Path,
+    *,
+    energy_eV: np.ndarray,
+    values: np.ndarray,
+    value_name: str,
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    values = np.asarray(ta_signal, dtype=float)
+    spectrum_values = np.asarray(values, dtype=float)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(
             handle,
-            fieldnames=["energy_eV", "wavelength_nm", "ta_signal"],
+            fieldnames=["energy_eV", "wavelength_nm", value_name],
         )
         writer.writeheader()
-        for energy, value in zip(np.asarray(energy_eV, dtype=float), values):
+        for energy, value in zip(
+            np.asarray(energy_eV, dtype=float),
+            spectrum_values,
+        ):
             writer.writerow(
                 {
                     "energy_eV": float(energy),
                     "wavelength_nm": float(HC_EV_NM / energy),
-                    "ta_signal": float(value),
+                    value_name: float(value),
                 }
             )
     return path
@@ -415,6 +402,34 @@ def save_factorial_summary_csv(path: Path, rows: list[dict[str, Any]]) -> Path:
 
 def _integrated_abs(energy_eV: np.ndarray, values: np.ndarray) -> float:
     return float(np.trapezoid(np.abs(np.asarray(values, dtype=float)), np.asarray(energy_eV, dtype=float)))
+
+
+def _max_abs_finite(values: np.ndarray) -> float:
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    return float("nan") if finite.size == 0 else float(np.max(np.abs(finite)))
+
+
+def _calculate_relative_response(
+    R_pump_probe: np.ndarray,
+    R_probe_only: np.ndarray,
+) -> np.ndarray:
+    """Return ``(R_pump_probe - R_probe_only) / R_probe_only``.
+
+    Exact zero denominators are represented by NaN because the relative
+    response is undefined there.
+    """
+
+    pump_probe = np.asarray(R_pump_probe, dtype=float)
+    probe_only = np.asarray(R_probe_only, dtype=float)
+    if pump_probe.shape != probe_only.shape:
+        raise ValueError(
+            f"R_pump_probe shape {pump_probe.shape} does not match "
+            f"R_probe_only shape {probe_only.shape}."
+        )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        relative_response = (pump_probe - probe_only) / probe_only
+    return np.where(probe_only == 0.0, np.nan, relative_response)
 
 
 def _read_absorption_spectrum(result) -> dict[str, np.ndarray]:
@@ -464,45 +479,175 @@ def _case_output_dir_name(case: FactorialCase) -> str:
     return f"EIS_{case.eis_eV:.2f}_PB_{case.pb:.2f}_EID_{case.eid:.2f}"
 
 
+def _difference_spectrum_dir(case_dir: Path) -> Path:
+    return case_dir / "difference_spectrum"
+
+
+def _relative_response_dir(case_dir: Path) -> Path:
+    return case_dir / "relative_response_map"
+
+
 def _zero_delay_index(delays_fs: np.ndarray) -> int:
     return int(np.argmin(np.abs(np.asarray(delays_fs, dtype=float))))
 
 
 def _saved_npz_path(case_dir: Path) -> Path:
-    return case_dir / "data" / "ta_phase_cycling_comparison.npz"
+    return (
+        _difference_spectrum_dir(case_dir)
+        / "data"
+        / "difference_spectrum.npz"
+    )
 
 
-def _saved_case_data_is_compatible(case_dir: Path, *, expected_delays_fs: tuple[float, ...]) -> bool:
+def _saved_relative_npz_path(case_dir: Path) -> Path:
+    return (
+        _relative_response_dir(case_dir)
+        / "data"
+        / "relative_response_map.npz"
+    )
+
+
+def _saved_case_data_is_compatible(
+    case_dir: Path,
+    *,
+    expected_case: FactorialCase,
+    expected_delays_fs: tuple[float, ...],
+) -> bool:
     npz_path = _saved_npz_path(case_dir)
-    if not npz_path.exists():
+    relative_npz_path = _saved_relative_npz_path(case_dir)
+    if not npz_path.exists() or not relative_npz_path.exists():
         return False
-    required = {"delays_fs", "energy_eV", "omega_fs_inv", "ta_map", "TA_phase_cases", "phase_labels"}
+    difference_required = {
+        "delays_fs",
+        "energy_eV",
+        "omega_fs_inv",
+        "ta_map",
+        "TA_phase_cases",
+        "probe_absorption",
+        "phase_labels",
+        "eis_eV",
+        "pb",
+        "eid",
+    }
+    relative_required = {
+        "delays_fs",
+        "energy_eV",
+        "omega_fs_inv",
+        "relative_response_map",
+        "relative_response_phase_cases",
+        "probe_absorption",
+        "phase_labels",
+        "eis_eV",
+        "pb",
+        "eid",
+    }
     try:
-        with np.load(npz_path, allow_pickle=False) as payload:
-            if not required.issubset(set(payload.files)):
+        with (
+            np.load(npz_path, allow_pickle=False) as payload,
+            np.load(relative_npz_path, allow_pickle=False) as relative_payload,
+        ):
+            if not difference_required.issubset(set(payload.files)):
+                return False
+            if not relative_required.issubset(set(relative_payload.files)):
                 return False
             delays = np.asarray(payload["delays_fs"], dtype=float)
+            relative_delays = np.asarray(
+                relative_payload["delays_fs"],
+                dtype=float,
+            )
             expected = np.asarray(expected_delays_fs, dtype=float)
             if delays.shape != expected.shape or not np.allclose(delays, expected, rtol=0.0, atol=1.0e-12):
                 return False
+            if (
+                relative_delays.shape != expected.shape
+                or not np.allclose(
+                    relative_delays,
+                    expected,
+                    rtol=0.0,
+                    atol=1.0e-12,
+                )
+            ):
+                return False
+            energy = np.asarray(payload["energy_eV"], dtype=float)
+            relative_energy = np.asarray(
+                relative_payload["energy_eV"],
+                dtype=float,
+            )
+            if (
+                energy.shape != relative_energy.shape
+                or not np.allclose(
+                    energy,
+                    relative_energy,
+                    rtol=0.0,
+                    atol=1.0e-12,
+                )
+            ):
+                return False
+            saved_values = (
+                float(payload["eis_eV"]),
+                float(payload["pb"]),
+                float(payload["eid"]),
+            )
+            relative_saved_values = (
+                float(relative_payload["eis_eV"]),
+                float(relative_payload["pb"]),
+                float(relative_payload["eid"]),
+            )
+            expected_values = (
+                float(expected_case.eis_eV),
+                float(expected_case.pb),
+                float(expected_case.eid),
+            )
+            if not np.allclose(saved_values, expected_values, rtol=0.0, atol=1.0e-15):
+                return False
+            if not np.allclose(
+                relative_saved_values,
+                expected_values,
+                rtol=0.0,
+                atol=1.0e-15,
+            ):
+                return False
             ta_map = np.asarray(payload["ta_map"], dtype=float)
             phase_cases = np.asarray(payload["TA_phase_cases"], dtype=float)
-            return ta_map.shape[0] == delays.size and phase_cases.shape[1] == delays.size
+            relative_map = np.asarray(
+                relative_payload["relative_response_map"],
+                dtype=float,
+            )
+            relative_cases = np.asarray(
+                relative_payload["relative_response_phase_cases"],
+                dtype=float,
+            )
+            return (
+                ta_map.shape[0] == delays.size
+                and phase_cases.shape[1] == delays.size
+                and relative_map.shape == ta_map.shape
+                and relative_cases.shape == phase_cases.shape
+            )
     except Exception:
         return False
 
 
 def _load_saved_case_result(case: FactorialCase, case_dir: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     npz_path = _saved_npz_path(case_dir)
+    relative_npz_path = _saved_relative_npz_path(case_dir)
     if not npz_path.exists():
         raise FileNotFoundError(npz_path)
+    if not relative_npz_path.exists():
+        raise FileNotFoundError(relative_npz_path)
     with np.load(npz_path, allow_pickle=False) as payload:
         delays = np.asarray(payload["delays_fs"], dtype=float)
         energy = np.asarray(payload["energy_eV"], dtype=float)
         omega = np.asarray(payload["omega_fs_inv"], dtype=float)
         ta_map = np.asarray(payload["ta_map"], dtype=float)
         phase_cases = np.asarray(payload["TA_phase_cases"], dtype=float)
+        probe_absorption = np.asarray(payload["probe_absorption"], dtype=float)
         phase_labels = [str(item) for item in np.asarray(payload["phase_labels"], dtype=str)]
+    with np.load(relative_npz_path, allow_pickle=False) as payload:
+        relative_response_map = np.asarray(payload["relative_response_map"], dtype=float)
+        relative_response_phase_cases = np.asarray(
+            payload["relative_response_phase_cases"],
+            dtype=float,
+        )
     zero_idx = _zero_delay_index(delays)
     summary = {
         "case_name": case.case_name,
@@ -529,7 +674,19 @@ def _load_saved_case_result(case: FactorialCase, case_dir: Path) -> tuple[dict[s
         "max_hermiticity_error": None,
         "max_abs_ta_signal": float(np.max(np.abs(ta_map))),
         "integrated_abs_ta_signal": _integrated_abs(energy, ta_map[zero_idx]),
-        "spectrum_csv": str(case_dir / "data" / "spectra" / f"{case.case_name}_ta_spectrum.csv"),
+        "max_abs_relative_response": _max_abs_finite(relative_response_map),
+        "spectrum_csv": str(
+            _difference_spectrum_dir(case_dir)
+            / "data"
+            / "spectra"
+            / f"{case.case_name}_difference_spectrum.csv"
+        ),
+        "relative_response_spectrum_csv": str(
+            _relative_response_dir(case_dir)
+            / "data"
+            / "spectra"
+            / f"{case.case_name}_relative_response.csv"
+        ),
     }
     result = {
         "summary": summary,
@@ -538,7 +695,9 @@ def _load_saved_case_result(case: FactorialCase, case_dir: Path) -> tuple[dict[s
         "omega_fs_inv": omega,
         "ta_map": ta_map,
         "TA_phase_cases": phase_cases,
-        "probe_absorption": None,
+        "relative_response_map": relative_response_map,
+        "relative_response_phase_cases": relative_response_phase_cases,
+        "probe_absorption": probe_absorption,
         "system": None,
         "base_params_adapter": None,
     }
@@ -549,12 +708,38 @@ def _load_saved_case_result(case: FactorialCase, case_dir: Path) -> tuple[dict[s
         "omega_fs_inv": omega,
         "ta_map": ta_map,
         "TA_phase_cases": phase_cases,
+        "relative_response_map": relative_response_map,
+        "relative_response_phase_cases": relative_response_phase_cases,
+        "probe_absorption": probe_absorption,
         "phase_labels": phase_labels,
-        "map_csv": case_dir / "data" / "ta_map.csv",
-        "all_delay_spectra_csv": case_dir / "data" / "ta_all_delay_spectra.csv",
-        "stats_csv": case_dir / "data" / "map_stats.csv",
-        "stats_json": case_dir / "data" / "map_stats.json",
+        "map_csv": _difference_spectrum_dir(case_dir) / "data" / "difference_spectrum_map.csv",
+        "all_delay_spectra_csv": _difference_spectrum_dir(case_dir) / "data" / "all_delay_spectra.csv",
+        "stats_csv": _difference_spectrum_dir(case_dir) / "data" / "map_stats.csv",
+        "stats_json": _difference_spectrum_dir(case_dir) / "data" / "map_stats.json",
         "data_npz": npz_path,
+        "relative_map_csv": _relative_response_dir(case_dir) / "data" / "relative_response_map.csv",
+        "relative_all_delay_spectra_csv": _relative_response_dir(case_dir) / "data" / "all_delay_relative_response.csv",
+        "relative_stats_csv": _relative_response_dir(case_dir) / "data" / "map_stats.csv",
+        "relative_stats_json": _relative_response_dir(case_dir) / "data" / "map_stats.json",
+        "relative_data_npz": relative_npz_path,
+        "subcases": {
+            "difference_spectrum": {
+                "output_dir": _difference_spectrum_dir(case_dir),
+                "map_csv": _difference_spectrum_dir(case_dir) / "data" / "difference_spectrum_map.csv",
+                "all_delay_spectra_csv": _difference_spectrum_dir(case_dir) / "data" / "all_delay_spectra.csv",
+                "stats_csv": _difference_spectrum_dir(case_dir) / "data" / "map_stats.csv",
+                "stats_json": _difference_spectrum_dir(case_dir) / "data" / "map_stats.json",
+                "data_npz": npz_path,
+            },
+            "relative_response_map": {
+                "output_dir": _relative_response_dir(case_dir),
+                "map_csv": _relative_response_dir(case_dir) / "data" / "relative_response_map.csv",
+                "all_delay_spectra_csv": _relative_response_dir(case_dir) / "data" / "all_delay_relative_response.csv",
+                "stats_csv": _relative_response_dir(case_dir) / "data" / "map_stats.csv",
+                "stats_json": _relative_response_dir(case_dir) / "data" / "map_stats.json",
+                "data_npz": relative_npz_path,
+            },
+        },
     }
     return result, legacy_outputs
 
@@ -583,7 +768,7 @@ def run_one_case(
         dt_fs=float(settings.dt_fs),
         solver_mode="lab_exact",
         pure_dephasing_channels=dephasing_channels,
-        input_description="Harmonic exciton ladder factorial TA v2 sanity-check.",
+        input_description="Harmonic exciton ladder factorial TA v3 sanity-check.",
         input_metadata={
             "factorial_case": asdict(case),
             "transition_to_level_dephasing_mapping": dephasing_mapping,
@@ -625,6 +810,7 @@ def run_one_case(
     omega = np.asarray(probe_spectrum["omega_fs_inv"], dtype=float)
     probe_absorption = np.asarray(probe_spectrum["absorption"], dtype=float)
     phase_ta_by_delay = []
+    phase_relative_response_by_delay = []
     trace_errors = []
     hermiticity_errors = []
 
@@ -647,6 +833,7 @@ def run_one_case(
         )
         phase_result = phase_plan.execute()
         phase_rows = []
+        phase_relative_rows = []
         for record in phase_result.case_records:
             if record.single_run_result is None:
                 raise ValueError("PhaseCyclingResult.case_records must store SingleRunResult.")
@@ -655,21 +842,57 @@ def run_one_case(
                 raise ValueError(f"energy_eV axis mismatch for {case.case_name} delay={delay_fs:g}.")
             if spectrum["omega_fs_inv"].shape != omega.shape or not np.allclose(spectrum["omega_fs_inv"], omega):
                 raise ValueError(f"omega_fs_inv axis mismatch for {case.case_name} delay={delay_fs:g}.")
-            phase_rows.append(np.asarray(spectrum["absorption"], dtype=float) - probe_absorption)
+            R_pump_probe = np.asarray(spectrum["absorption"], dtype=float)
+            R_probe_only = probe_absorption
+            relative_response = _calculate_relative_response(
+                R_pump_probe,
+                R_probe_only,
+            )
+            phase_rows.append(R_pump_probe - R_probe_only)
+            phase_relative_rows.append(relative_response)
             dyn = record.single_run_result.dynamics_result
             trace_errors.append(float(dyn.max_trace_error()))
             hermiticity_errors.append(float(dyn.max_hermiticity_error()))
         phase_ta_by_delay.append(np.stack(phase_rows, axis=0))
+        phase_relative_response_by_delay.append(
+            np.stack(phase_relative_rows, axis=0)
+        )
 
     trace_errors.append(float(probe_result.dynamics_result.max_trace_error()))
     hermiticity_errors.append(float(probe_result.dynamics_result.max_hermiticity_error()))
     delay_phase_ta = np.stack(phase_ta_by_delay, axis=0)
     phase_ta = np.moveaxis(delay_phase_ta, 1, 0)
     ta_map = np.mean(delay_phase_ta, axis=1)
+    delay_phase_relative_response = np.stack(
+        phase_relative_response_by_delay,
+        axis=0,
+    )
+    relative_response_phase_cases = np.moveaxis(
+        delay_phase_relative_response,
+        1,
+        0,
+    )
+    relative_response_map = np.mean(delay_phase_relative_response, axis=1)
+    zero_delay_index = int(
+        np.argmin(np.abs(np.asarray(delays_fs, dtype=float)))
+    )
     spectrum_csv = save_case_spectrum_csv(
-        output_dir / "data" / "spectra" / f"{case.case_name}_ta_spectrum.csv",
+        _difference_spectrum_dir(output_dir)
+        / "data"
+        / "spectra"
+        / f"{case.case_name}_difference_spectrum.csv",
         energy_eV=energy,
-        ta_signal=ta_map[int(np.argmin(np.abs(np.asarray(delays_fs, dtype=float))))],
+        values=ta_map[zero_delay_index],
+        value_name="difference_response",
+    )
+    relative_response_spectrum_csv = save_case_spectrum_csv(
+        _relative_response_dir(output_dir)
+        / "data"
+        / "spectra"
+        / f"{case.case_name}_relative_response.csv",
+        energy_eV=energy,
+        values=relative_response_map[zero_delay_index],
+        value_name="relative_response",
     )
 
     transition_energies = system.metadata["transition_energies_eV"]
@@ -699,8 +922,12 @@ def run_one_case(
         "max_trace_error": None if not trace_errors else float(max(trace_errors)),
         "max_hermiticity_error": None if not hermiticity_errors else float(max(hermiticity_errors)),
         "max_abs_ta_signal": float(np.max(np.abs(ta_map))),
-        "integrated_abs_ta_signal": _integrated_abs(energy, ta_map[int(np.argmin(np.abs(np.asarray(delays_fs, dtype=float))))]),
+        "integrated_abs_ta_signal": _integrated_abs(energy, ta_map[zero_delay_index]),
+        "max_abs_relative_response": _max_abs_finite(relative_response_map),
         "spectrum_csv": str(spectrum_csv),
+        "relative_response_spectrum_csv": str(
+            relative_response_spectrum_csv
+        ),
     }
     return {
         "summary": summary,
@@ -709,6 +936,8 @@ def run_one_case(
         "omega_fs_inv": omega,
         "ta_map": ta_map,
         "TA_phase_cases": phase_ta,
+        "relative_response_map": relative_response_map,
+        "relative_response_phase_cases": relative_response_phase_cases,
         "probe_absorption": probe_absorption,
         "system": system.to_dict(include_arrays=True),
         "base_params_adapter": base_params.input_metadata.get("system_adapter"),
@@ -726,6 +955,7 @@ def _summary_csv_rows(case_results: list[dict[str, Any]]) -> list[dict[str, Any]
         "eid",
         "max_abs_ta_signal",
         "integrated_abs_ta_signal",
+        "max_abs_relative_response",
         "n_delays",
         "delay_min_fs",
         "delay_max_fs",
@@ -739,6 +969,8 @@ def _summary_csv_rows(case_results: list[dict[str, Any]]) -> list[dict[str, Any]
         "data_npz",
         "ta_map_csv",
         "all_delay_spectra_csv",
+        "relative_response_npz",
+        "relative_response_map_csv",
     ]
     return [{key: item["summary"][key] for key in keys} for item in case_results]
 
@@ -795,18 +1027,24 @@ def _map_stats(name: str, values: np.ndarray, *, reference_maxabs: float | None 
     }
 
 
-def save_ta_map_csv(
+def save_difference_map_csv(
     path: Path,
     *,
     delays_fs: np.ndarray,
     energy_eV: np.ndarray,
     ta_map: np.ndarray,
+    probe_absorption: np.ndarray,
 ) -> Path:
     values = np.asarray(ta_map, dtype=float)
+    probe = np.asarray(probe_absorption, dtype=float)
     delays = np.asarray(delays_fs, dtype=float)
     energy = np.asarray(energy_eV, dtype=float)
     if values.shape != (delays.size, energy.size):
         raise ValueError(f"ta_map shape {values.shape} is incompatible with delay/energy axes.")
+    if probe.shape != (energy.size,):
+        raise ValueError(
+            f"probe_absorption shape {probe.shape} is incompatible with energy axis."
+        )
     rows: list[dict[str, Any]] = []
     for delay_index, delay_fs in enumerate(delays):
         for energy_index, photon_energy_eV in enumerate(energy):
@@ -817,13 +1055,58 @@ def save_ta_map_csv(
                     "energy_index": int(energy_index),
                     "energy_eV": float(photon_energy_eV),
                     "wavelength_nm": float(HC_EV_NM / photon_energy_eV),
-                    "ta_signal": float(values[delay_index, energy_index]),
+                    "difference_response": float(values[delay_index, energy_index]),
+                    "R_pump_probe": float(
+                        values[delay_index, energy_index]
+                        + probe[energy_index]
+                    ),
+                    "R_probe_only": float(probe[energy_index]),
                 }
             )
     return save_factorial_summary_csv(path, rows)
 
 
-def save_all_delay_spectra_csv(
+def save_relative_response_map_csv(
+    path: Path,
+    *,
+    delays_fs: np.ndarray,
+    energy_eV: np.ndarray,
+    relative_response_map: np.ndarray,
+    probe_absorption: np.ndarray,
+) -> Path:
+    relative = np.asarray(relative_response_map, dtype=float)
+    probe = np.asarray(probe_absorption, dtype=float)
+    delays = np.asarray(delays_fs, dtype=float)
+    energy = np.asarray(energy_eV, dtype=float)
+    if relative.shape != (delays.size, energy.size):
+        raise ValueError(
+            f"relative_response_map shape {relative.shape} is incompatible "
+            "with delay/energy axes."
+        )
+    if probe.shape != (energy.size,):
+        raise ValueError(
+            f"probe_absorption shape {probe.shape} is incompatible with energy axis."
+        )
+    rows: list[dict[str, Any]] = []
+    for delay_index, delay_fs in enumerate(delays):
+        for energy_index, photon_energy_eV in enumerate(energy):
+            rows.append(
+                {
+                    "delay_index": int(delay_index),
+                    "delay_fs": float(delay_fs),
+                    "energy_index": int(energy_index),
+                    "energy_eV": float(photon_energy_eV),
+                    "wavelength_nm": float(HC_EV_NM / photon_energy_eV),
+                    "relative_response": float(
+                        relative[delay_index, energy_index]
+                    ),
+                    "R_probe_only": float(probe[energy_index]),
+                }
+            )
+    return save_factorial_summary_csv(path, rows)
+
+
+def save_all_delay_difference_spectra_csv(
     path: Path,
     *,
     delays_fs: np.ndarray,
@@ -849,53 +1132,173 @@ def save_all_delay_spectra_csv(
                 "energy_index": int(energy_index),
                 "energy_eV": float(photon_energy_eV),
                 "wavelength_nm": float(HC_EV_NM / photon_energy_eV),
-                "TA_phase_avg": float(avg[delay_index, energy_index]),
+                "difference_response_avg": float(
+                    avg[delay_index, energy_index]
+                ),
             }
             for phase_index, label in enumerate(phase_labels):
-                row[f"TA_phase_{label}"] = float(phase_cases[phase_index, delay_index, energy_index])
+                row[f"difference_response_phase_{label}"] = float(
+                    phase_cases[phase_index, delay_index, energy_index]
+                )
             rows.append(row)
     return save_factorial_summary_csv(path, rows)
 
 
-def save_legacy_shaped_outputs(
+def save_all_delay_relative_response_csv(
+    path: Path,
+    *,
+    delays_fs: np.ndarray,
+    energy_eV: np.ndarray,
+    phase_stack: np.ndarray,
+    phase_avg: np.ndarray,
+    phase_labels: list[str],
+) -> Path:
+    delays = np.asarray(delays_fs, dtype=float)
+    energy = np.asarray(energy_eV, dtype=float)
+    phase_cases = np.asarray(phase_stack, dtype=float)
+    avg = np.asarray(phase_avg, dtype=float)
+    expected_shape = (len(phase_labels), delays.size, energy.size)
+    if phase_cases.shape != expected_shape:
+        raise ValueError(
+            f"relative response phase shape {phase_cases.shape} is "
+            f"incompatible with {expected_shape}."
+        )
+    if avg.shape != (delays.size, energy.size):
+        raise ValueError(
+            f"relative_response_map shape {avg.shape} is incompatible "
+            "with delay/energy axes."
+        )
+    rows: list[dict[str, Any]] = []
+    for delay_index, delay_fs in enumerate(delays):
+        for energy_index, photon_energy_eV in enumerate(energy):
+            row = {
+                "delay_index": int(delay_index),
+                "delay_fs": float(delay_fs),
+                "energy_index": int(energy_index),
+                "energy_eV": float(photon_energy_eV),
+                "wavelength_nm": float(HC_EV_NM / photon_energy_eV),
+                "relative_response_avg": float(
+                    avg[delay_index, energy_index]
+                ),
+            }
+            for phase_index, label in enumerate(phase_labels):
+                row[f"relative_response_phase_{label}"] = float(
+                    phase_cases[phase_index, delay_index, energy_index]
+                )
+            rows.append(row)
+    return save_factorial_summary_csv(path, rows)
+
+
+def save_split_subcase_outputs(
     output_dir: Path,
     *,
     settings: FactorialSettings,
     case_results: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    data_dir = output_dir / "data"
+    difference_dir = _difference_spectrum_dir(output_dir)
+    relative_dir = _relative_response_dir(output_dir)
+    difference_data_dir = difference_dir / "data"
+    relative_data_dir = relative_dir / "data"
     case_names = [item["summary"]["case_name"] for item in case_results]
     if not case_names:
         raise ValueError("At least one case result is required.")
     if len(case_names) != 1:
-        raise ValueError("Per-case legacy-shaped output expects exactly one case result.")
+        raise ValueError("Per-case split output expects exactly one case result.")
     energy = np.asarray(case_results[0]["energy_eV"], dtype=float)
     omega = np.asarray(case_results[0]["omega_fs_inv"], dtype=float)
     delays = np.asarray(case_results[0]["delays_fs"], dtype=float)
     ta_map = np.asarray(case_results[0]["ta_map"], dtype=float)
     phase_cases = np.asarray(case_results[0]["TA_phase_cases"], dtype=float)
+    relative_response_map = np.asarray(
+        case_results[0]["relative_response_map"],
+        dtype=float,
+    )
+    relative_response_phase_cases = np.asarray(
+        case_results[0]["relative_response_phase_cases"],
+        dtype=float,
+    )
+    probe_absorption = np.asarray(case_results[0]["probe_absorption"], dtype=float)
     phase_labels = [_phase_label(value) for value in PHASE_VALUES_RAD]
-    map_csv = save_ta_map_csv(data_dir / "ta_map.csv", delays_fs=delays, energy_eV=energy, ta_map=ta_map)
-    all_delay_spectra_csv = save_all_delay_spectra_csv(
-        data_dir / "ta_all_delay_spectra.csv",
+    map_csv = save_difference_map_csv(
+        difference_data_dir / "difference_spectrum_map.csv",
+        delays_fs=delays,
+        energy_eV=energy,
+        ta_map=ta_map,
+        probe_absorption=probe_absorption,
+    )
+    relative_map_csv = save_relative_response_map_csv(
+        relative_data_dir / "relative_response_map.csv",
+        delays_fs=delays,
+        energy_eV=energy,
+        relative_response_map=relative_response_map,
+        probe_absorption=probe_absorption,
+    )
+    all_delay_spectra_csv = save_all_delay_difference_spectra_csv(
+        difference_data_dir / "all_delay_spectra.csv",
         delays_fs=delays,
         energy_eV=energy,
         phase_stack=phase_cases,
         phase_avg=ta_map,
         phase_labels=phase_labels,
     )
-    stats_rows = [_map_stats("TA_phase_avg_raw_full_energy", ta_map)]
-    reference = stats_rows[0]["maxabs"]
-    stats_rows.extend(
-        _map_stats(f"TA_phase_{phase_label}_full_energy", phase_cases[index], reference_maxabs=reference)
+    relative_all_delay_spectra_csv = save_all_delay_relative_response_csv(
+        relative_data_dir / "all_delay_relative_response.csv",
+        delays_fs=delays,
+        energy_eV=energy,
+        phase_stack=relative_response_phase_cases,
+        phase_avg=relative_response_map,
+        phase_labels=phase_labels,
+    )
+    difference_stats_rows = [
+        _map_stats("difference_response_avg_full_energy", ta_map)
+    ]
+    difference_reference = difference_stats_rows[0]["maxabs"]
+    difference_stats_rows.extend(
+        _map_stats(
+            f"difference_response_phase_{phase_label}_full_energy",
+            phase_cases[index],
+            reference_maxabs=difference_reference,
+        )
         for index, phase_label in enumerate(phase_labels)
     )
-    stats_csv = save_factorial_summary_csv(data_dir / "map_stats.csv", stats_rows)
-    stats_json = _write_json(data_dir / "map_stats.json", {"map_stats": stats_rows})
-    npz_path = data_dir / "ta_phase_cycling_comparison.npz"
+    relative_stats_rows = [
+        _map_stats(
+            "relative_response_avg_full_energy",
+            relative_response_map,
+        )
+    ]
+    relative_reference = relative_stats_rows[0]["maxabs"]
+    relative_stats_rows.extend(
+        _map_stats(
+            f"relative_response_phase_{phase_label}_full_energy",
+            relative_response_phase_cases[index],
+            reference_maxabs=relative_reference,
+        )
+        for index, phase_label in enumerate(phase_labels)
+    )
+    stats_csv = save_factorial_summary_csv(
+        difference_data_dir / "map_stats.csv",
+        difference_stats_rows,
+    )
+    stats_json = _write_json(
+        difference_data_dir / "map_stats.json",
+        {"map_stats": difference_stats_rows},
+    )
+    relative_stats_csv = save_factorial_summary_csv(
+        relative_data_dir / "map_stats.csv",
+        relative_stats_rows,
+    )
+    relative_stats_json = _write_json(
+        relative_data_dir / "map_stats.json",
+        {"map_stats": relative_stats_rows},
+    )
+    npz_path = _saved_npz_path(output_dir)
     np.savez_compressed(
         npz_path,
         case_name=np.asarray(case_names[0], dtype=str),
+        eis_eV=np.asarray(case_results[0]["summary"]["eis_eV"], dtype=float),
+        pb=np.asarray(case_results[0]["summary"]["pb"], dtype=float),
+        eid=np.asarray(case_results[0]["summary"]["eid"], dtype=float),
         delays_fs=delays,
         energy_eV=energy,
         omega_fs_inv=omega,
@@ -905,6 +1308,24 @@ def save_legacy_shaped_outputs(
         TA_phase_cases=phase_cases,
         TA_phase_avg=ta_map,
         ta_map=ta_map,
+        probe_absorption=probe_absorption,
+    )
+    relative_npz_path = _saved_relative_npz_path(output_dir)
+    np.savez_compressed(
+        relative_npz_path,
+        case_name=np.asarray(case_names[0], dtype=str),
+        eis_eV=np.asarray(case_results[0]["summary"]["eis_eV"], dtype=float),
+        pb=np.asarray(case_results[0]["summary"]["pb"], dtype=float),
+        eid=np.asarray(case_results[0]["summary"]["eid"], dtype=float),
+        delays_fs=delays,
+        energy_eV=energy,
+        omega_fs_inv=omega,
+        wavelength_nm=HC_EV_NM / energy,
+        phase_values_rad=np.asarray(PHASE_VALUES_RAD, dtype=float),
+        phase_labels=np.asarray(phase_labels, dtype=str),
+        relative_response_phase_cases=relative_response_phase_cases,
+        relative_response_map=relative_response_map,
+        probe_absorption=probe_absorption,
     )
     return {
         "case_names": case_names,
@@ -913,16 +1334,50 @@ def save_legacy_shaped_outputs(
         "omega_fs_inv": omega,
         "ta_map": ta_map,
         "TA_phase_cases": phase_cases,
+        "relative_response_map": relative_response_map,
+        "relative_response_phase_cases": relative_response_phase_cases,
+        "probe_absorption": probe_absorption,
         "phase_labels": phase_labels,
         "map_csv": map_csv,
         "all_delay_spectra_csv": all_delay_spectra_csv,
         "stats_csv": stats_csv,
         "stats_json": stats_json,
         "data_npz": npz_path,
+        "relative_map_csv": relative_map_csv,
+        "relative_all_delay_spectra_csv": relative_all_delay_spectra_csv,
+        "relative_stats_csv": relative_stats_csv,
+        "relative_stats_json": relative_stats_json,
+        "relative_data_npz": relative_npz_path,
+        "subcases": {
+            "difference_spectrum": {
+                "output_dir": difference_dir,
+                "map_csv": map_csv,
+                "all_delay_spectra_csv": all_delay_spectra_csv,
+                "stats_csv": stats_csv,
+                "stats_json": stats_json,
+                "data_npz": npz_path,
+            },
+            "relative_response_map": {
+                "output_dir": relative_dir,
+                "map_csv": relative_map_csv,
+                "all_delay_spectra_csv": relative_all_delay_spectra_csv,
+                "stats_csv": relative_stats_csv,
+                "stats_json": relative_stats_json,
+                "data_npz": relative_npz_path,
+            },
+        },
     }
 
 
-def maybe_plot_ta_map(path: Path, *, delays_fs: np.ndarray, energy_eV: np.ndarray, ta_map: np.ndarray) -> Path | None:
+def maybe_plot_ta_map(
+    path: Path,
+    *,
+    delays_fs: np.ndarray,
+    energy_eV: np.ndarray,
+    ta_map: np.ndarray,
+    title: str = "TA map: delay x energy",
+    colorbar_label: str = "Normalized S_TA (displayed map / p99abs)",
+) -> Path | None:
     try:
         import matplotlib.pyplot as plt
     except Exception as exc:
@@ -943,7 +1398,7 @@ def maybe_plot_ta_map(path: Path, *, delays_fs: np.ndarray, energy_eV: np.ndarra
     )
     ax.set_xlabel("Probe photon energy (eV)")
     ax.set_ylabel("Pump-probe delay (fs)")
-    ax.set_title("TA map: delay x energy\nnormalized display, colorbar fixed to [-1, 1]")
+    ax.set_title(f"{title}\nnormalized display, colorbar fixed to [-1, 1]")
     ax.set_xlim(*TA_MAP_XLIM_EV)
     ax.text(
         0.02,
@@ -955,7 +1410,7 @@ def maybe_plot_ta_map(path: Path, *, delays_fs: np.ndarray, energy_eV: np.ndarra
         fontsize=8,
         bbox={"facecolor": "white", "alpha": 0.72, "edgecolor": "none", "pad": 2},
     )
-    cbar = fig.colorbar(image, ax=ax, label="Normalized S_TA (displayed map / p99abs)")
+    cbar = fig.colorbar(image, ax=ax, label=colorbar_label)
     cbar.set_ticks([-1.0, -0.5, 0.0, 0.5, 1.0])
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -975,6 +1430,7 @@ def maybe_plot_selected_delay_lineouts(
     energy_eV: np.ndarray,
     ta_map: np.ndarray,
     selected_delays_fs: tuple[float, ...],
+    ylabel: str = "Normalized difference response",
 ) -> Path | None:
     try:
         import matplotlib.pyplot as plt
@@ -995,7 +1451,7 @@ def maybe_plot_selected_delay_lineouts(
         ax.axhline(0.0, linewidth=0.8, linestyle="--", color="black", alpha=0.5)
         ax.set_xlim(*TA_MAP_XLIM_EV)
         ax.set_ylim(-1.08, 1.08)
-        ax.set_ylabel("Normalized S_TA")
+        ax.set_ylabel(ylabel)
         ax.set_title(f"delay = {actual_delay:g} fs")
         ax.text(
             0.02,
@@ -1130,9 +1586,16 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
     force_rerun = bool(getattr(args, "force_rerun", False) or getattr(args, "force", False))
     for case in cases:
         case_dir = output_dir / _case_output_dir_name(case)
+        difference_dir = _difference_spectrum_dir(case_dir)
+        relative_dir = _relative_response_dir(case_dir)
         saved_npz = _saved_npz_path(case_dir)
         loaded_from_saved_data = bool(
-            _saved_case_data_is_compatible(case_dir, expected_delays_fs=delays_fs) and not force_rerun
+            _saved_case_data_is_compatible(
+                case_dir,
+                expected_case=case,
+                expected_delays_fs=delays_fs,
+            )
+            and not force_rerun
         )
         if loaded_from_saved_data:
             print(f"[factorial] using saved data for {case.case_name}: {saved_npz}")
@@ -1145,29 +1608,55 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
                 output_dir=case_dir,
                 normalizer=normalizer,
             )
-            legacy_outputs = save_legacy_shaped_outputs(case_dir, settings=settings, case_results=[case_result])
-        figure_paths: dict[str, Path | None] = {}
+            legacy_outputs = save_split_subcase_outputs(
+                case_dir,
+                settings=settings,
+                case_results=[case_result],
+            )
+        figure_paths: dict[str, dict[str, Path | None]] = {
+            "difference_spectrum": {},
+            "relative_response_map": {},
+        }
         ta_map_path = None
         if not bool(args.no_plots):
             ta_map_path = maybe_plot_ta_map(
-                case_dir / "figures" / "plot" / "ta_map.png",
+                difference_dir / "figures" / "plot" / "difference_spectrum_map.png",
                 delays_fs=legacy_outputs["delays_fs"],
                 energy_eV=legacy_outputs["energy_eV"],
                 ta_map=legacy_outputs["ta_map"],
+                title="Difference spectrum map",
             )
-            figure_paths["ta_map"] = ta_map_path
-            figure_paths["selected_delay_lineouts"] = maybe_plot_selected_delay_lineouts(
-                case_dir / "figures" / "preview" / "selected_delay_lineouts.png",
+            figure_paths["difference_spectrum"]["map"] = ta_map_path
+            figure_paths["relative_response_map"]["map"] = maybe_plot_ta_map(
+                relative_dir / "figures" / "plot" / "relative_response_map.png",
+                delays_fs=legacy_outputs["delays_fs"],
+                energy_eV=legacy_outputs["energy_eV"],
+                ta_map=legacy_outputs["relative_response_map"],
+                title="Relative pump-probe response",
+                colorbar_label=(
+                    "Normalized relative_response (displayed map / p99abs)"
+                ),
+            )
+            figure_paths["difference_spectrum"]["selected_delay_lineouts"] = maybe_plot_selected_delay_lineouts(
+                difference_dir / "figures" / "preview" / "selected_delay_lineouts.png",
                 delays_fs=legacy_outputs["delays_fs"],
                 energy_eV=legacy_outputs["energy_eV"],
                 ta_map=legacy_outputs["ta_map"],
                 selected_delays_fs=settings.selected_lineout_delays_fs,
             )
+            figure_paths["relative_response_map"]["selected_delay_lineouts"] = maybe_plot_selected_delay_lineouts(
+                relative_dir / "figures" / "preview" / "selected_delay_lineouts.png",
+                delays_fs=legacy_outputs["delays_fs"],
+                energy_eV=legacy_outputs["energy_eV"],
+                ta_map=legacy_outputs["relative_response_map"],
+                selected_delays_fs=settings.selected_lineout_delays_fs,
+                ylabel="Normalized relative response",
+            )
             for target_delay in settings.selected_lineout_delays_fs:
                 delay_index = _nearest_delay_index(legacy_outputs["delays_fs"], target_delay)
                 actual_delay = float(legacy_outputs["delays_fs"][delay_index])
-                figure_paths[f"biased_overlay_lineout_{_delay_label(actual_delay)}_fs"] = maybe_plot_biased_overlay_lineout(
-                    case_dir / "figures" / "preview" / f"biased_overlay_lineout_{_delay_label(actual_delay)}_fs.png",
+                figure_paths["difference_spectrum"][f"biased_overlay_lineout_{_delay_label(actual_delay)}_fs"] = maybe_plot_biased_overlay_lineout(
+                    difference_dir / "figures" / "preview" / f"biased_overlay_lineout_{_delay_label(actual_delay)}_fs.png",
                     delay_fs=actual_delay,
                     delay_index=delay_index,
                     energy_eV=legacy_outputs["energy_eV"],
@@ -1175,7 +1664,7 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
                     phase_labels=legacy_outputs["phase_labels"],
                 )
         case_meta = {
-            "example_name": "ta_harmonic_exciton_ladder_factorial_v2",
+            "example_name": "ta_harmonic_exciton_ladder_factorial_v3",
             "script": str(Path(__file__).resolve()),
             "output_dir": case_dir,
             "quick": bool(args.quick),
@@ -1186,12 +1675,19 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
             "target_phase_vector": dict(TARGET_PHASE_VECTOR),
             "workflow": {
                 "compute_path": "TA recipe v2 generic pulse-sequence + pump phase cases",
-                "output_shape": "legacy TA phase-cycling demo output layout for one factorial case",
+                "output_shape": (
+                    "one physical factorial case containing parallel "
+                    "difference_spectrum and relative_response_map subcases"
+                ),
                 "loaded_from_saved_data": loaded_from_saved_data,
             },
             "spectroscopy": {
                 "definition": "absorption = omega * Im[P(omega)/E_probe(omega)]",
                 "TA_definition": "S_TA = S_pump_probe - S_probe_only",
+                "relative_response_definition": (
+                    "relative_response = "
+                    "(R_pump_probe - R_probe_only) / R_probe_only"
+                ),
                 "ta_map_axes": ["delay_fs", "energy_eV"],
                 "delays_fs": delays_fs,
                 "number_density_m3": settings.number_density_m3,
@@ -1199,24 +1695,64 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
                 "rel_threshold": settings.rel_threshold,
                 "ta_map_xlim_eV": TA_MAP_XLIM_EV,
             },
-            "data_npz": legacy_outputs["data_npz"],
-            "ta_map_csv": legacy_outputs["map_csv"],
-            "all_delay_spectra_csv": legacy_outputs["all_delay_spectra_csv"],
-            "stats_csv": legacy_outputs["stats_csv"],
-            "stats_json": legacy_outputs["stats_json"],
-            "figures": figure_paths,
+            "subcases": {
+                "difference_spectrum": {
+                    **legacy_outputs["subcases"]["difference_spectrum"],
+                    "figures": figure_paths["difference_spectrum"],
+                },
+                "relative_response_map": {
+                    **legacy_outputs["subcases"]["relative_response_map"],
+                    "figures": figure_paths["relative_response_map"],
+                },
+            },
             "case": {
                 "summary": case_result["summary"],
                 "system": case_result["system"],
                 "base_params_adapter": case_result["base_params_adapter"],
             },
         }
+        difference_meta_path = _write_json(
+            difference_dir / "meta.json",
+            {
+                "subcase_name": "difference_spectrum",
+                "parent_case_name": case.case_name,
+                "parent_output_dir": case_dir,
+                "definition": "difference_response = R_pump_probe - R_probe_only",
+                "parameters": asdict(case),
+                "outputs": legacy_outputs["subcases"]["difference_spectrum"],
+                "figures": figure_paths["difference_spectrum"],
+            },
+        )
+        relative_meta_path = _write_json(
+            relative_dir / "meta.json",
+            {
+                "subcase_name": "relative_response_map",
+                "parent_case_name": case.case_name,
+                "parent_output_dir": case_dir,
+                "definition": (
+                    "relative_response = "
+                    "(R_pump_probe - R_probe_only) / R_probe_only"
+                ),
+                "zero_denominator_policy": "NaN",
+                "parameters": asdict(case),
+                "outputs": legacy_outputs["subcases"]["relative_response_map"],
+                "figures": figure_paths["relative_response_map"],
+            },
+        )
+        case_meta["subcases"]["difference_spectrum"]["meta_json"] = difference_meta_path
+        case_meta["subcases"]["relative_response_map"]["meta_json"] = relative_meta_path
         case_meta_path = _write_json(case_dir / "meta.json", case_meta)
         case_result["summary"]["output_dir"] = str(case_dir)
         case_result["summary"]["meta_json"] = str(case_meta_path)
         case_result["summary"]["data_npz"] = str(legacy_outputs["data_npz"])
         case_result["summary"]["ta_map_csv"] = str(legacy_outputs["map_csv"])
         case_result["summary"]["all_delay_spectra_csv"] = str(legacy_outputs["all_delay_spectra_csv"])
+        case_result["summary"]["relative_response_npz"] = str(
+            legacy_outputs["relative_data_npz"]
+        )
+        case_result["summary"]["relative_response_map_csv"] = str(
+            legacy_outputs["relative_map_csv"]
+        )
         case_results.append(case_result)
         case_entries.append(
             {
@@ -1224,18 +1760,25 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
                 "output_dir": case_dir,
                 "loaded_from_saved_data": loaded_from_saved_data,
                 "meta_json": case_meta_path,
-                "data_npz": legacy_outputs["data_npz"],
-                "ta_map_csv": legacy_outputs["map_csv"],
-                "all_delay_spectra_csv": legacy_outputs["all_delay_spectra_csv"],
-                "stats_csv": legacy_outputs["stats_csv"],
-                "figures": figure_paths,
+                "subcases": {
+                    "difference_spectrum": {
+                        **legacy_outputs["subcases"]["difference_spectrum"],
+                        "meta_json": difference_meta_path,
+                        "figures": figure_paths["difference_spectrum"],
+                    },
+                    "relative_response_map": {
+                        **legacy_outputs["subcases"]["relative_response_map"],
+                        "meta_json": relative_meta_path,
+                        "figures": figure_paths["relative_response_map"],
+                    },
+                },
             }
         )
 
     summary_rows = _summary_csv_rows(case_results)
     summary_csv = save_factorial_summary_csv(output_dir / "data" / "factorial_summary.csv", summary_rows)
     meta = {
-        "example_name": "ta_harmonic_exciton_ladder_factorial_v2",
+        "example_name": "ta_harmonic_exciton_ladder_factorial_v3",
         "script": str(Path(__file__).resolve()),
         "output_dir": output_dir,
         "quick": bool(args.quick),
@@ -1247,11 +1790,18 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
         "target_phase_vector": dict(TARGET_PHASE_VECTOR),
         "workflow": {
             "compute_path": "TA recipe v2 generic pulse-sequence + pump phase cases",
-            "output_shape": "one legacy-shaped output directory per factorial case",
+            "output_shape": (
+                "one directory per physical factorial case, with parallel "
+                "difference_spectrum and relative_response_map subcases"
+            ),
         },
         "spectroscopy": {
             "definition": "absorption = omega * Im[P(omega)/E_probe(omega)]",
             "TA_definition": "S_TA = S_pump_probe - S_probe_only",
+            "relative_response_definition": (
+                "relative_response = "
+                "(R_pump_probe - R_probe_only) / R_probe_only"
+            ),
             "number_density_m3": settings.number_density_m3,
             "zero_padding_factor": settings.zero_padding_factor,
             "rel_threshold": settings.rel_threshold,
@@ -1262,7 +1812,7 @@ def run_factorial(args: argparse.Namespace) -> dict[str, Any]:
     }
     meta_path = _write_json(output_dir / "meta.json", meta)
 
-    print("harmonic exciton ladder factorial v2 finished")
+    print("harmonic exciton ladder factorial v3 finished")
     print(f"output_dir: {output_dir}")
     print(f"summary_csv: {summary_csv}")
     print(f"meta_json: {meta_path}")
@@ -1292,7 +1842,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eid", type=float, default=1.1, help="EID on-value for --case-mode factorial.")
     parser.add_argument("--pb-scan", type=float, nargs="+", default=[0.7, 0.8, 0.9, 0.95, 0.99])
     parser.add_argument("--eid-scan", type=float, nargs="+", default=[1.1, 1.3, 1.5])
-    parser.add_argument("--eis-scan-eV", type=float, nargs="+", default=[0.01, 0.02, 0.05, 0.1])
+    parser.add_argument(
+        "--eis-scan-eV",
+        type=float,
+        nargs="+",
+        default=[-0.01, 0.0, 0.01],
+    )
     return parser.parse_args()
 
 
@@ -1309,12 +1864,12 @@ def main_new_factorial_plan() -> None:
         force=False,
         no_plots=False,
         case_mode="factorial",
-        eis_eV=0.01,
+        eis_eV=-0.01,
         pb=1.0,
         eid=1.0,
         pb_scan=[1.0, 0.9, 0.7],
         eid_scan=[1.0, 1.1, 1.5],
-        eis_scan_eV=[0.01],
+        eis_scan_eV=[-0.01, 0.0, 0.01],
     )
     run_factorial(args)
 

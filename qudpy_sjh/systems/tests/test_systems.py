@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import tempfile
 import unittest
 
 import numpy as np
@@ -10,6 +13,7 @@ from qudpy_sjh.systems import (
     make_three_level_ladder_system,
     make_two_level_system,
 )
+from qudpy_sjh.utils.core.parameters import PureDephasingChannel, RelaxationChannel
 
 
 class NLevelSystemValidationTests(unittest.TestCase):
@@ -93,6 +97,66 @@ class NLevelSystemDissipationTests(unittest.TestCase):
         self.assertEqual(appended.dissipation, ("relax_1", "pure_1", "pure_2"))
         self.assertIsNot(system, replaced)
         self.assertIsNot(replaced, appended)
+
+
+class NLevelSystemJsonRoundTripTests(unittest.TestCase):
+    def _system(self) -> NLevelSystem:
+        initial_state = np.asarray(
+            [[1.0 + 0.0j, 0.0 + 0.25j], [0.0 - 0.25j, 0.0 + 0.0j]]
+        )
+        return NLevelSystem(
+            name="json_round_trip",
+            basis=("0", "X"),
+            energies_eV=np.asarray([0.0, 1.55]),
+            dipole_matrix_D=np.asarray([[0.0, 5.0], [5.0, 0.0]]),
+            initial_state=initial_state,
+            transition_dephasing_fs_inv={("0", "X"): 0.01},
+            dissipation=(
+                RelaxationChannel(
+                    name="x_to_0",
+                    from_level=1,
+                    to_level=0,
+                    T1_fs=100.0,
+                ),
+                PureDephasingChannel(
+                    name="x_phi",
+                    level=1,
+                    rate_fs_inv=0.02,
+                ),
+                "metadata_only_channel",
+            ),
+            metadata={"source": "unit-test", "path": Path("example")},
+        )
+
+    def _assert_equivalent(self, expected: NLevelSystem, actual: NLevelSystem) -> None:
+        self.assertEqual(actual.name, expected.name)
+        self.assertEqual(actual.basis, expected.basis)
+        np.testing.assert_allclose(actual.energies_eV, expected.energies_eV)
+        np.testing.assert_allclose(actual.dipole_matrix_D, expected.dipole_matrix_D)
+        np.testing.assert_allclose(actual.initial_state, expected.initial_state)
+        self.assertEqual(
+            actual.transition_dephasing_fs_inv,
+            expected.transition_dephasing_fs_inv,
+        )
+        self.assertEqual(actual.dissipation, expected.dissipation)
+        self.assertEqual(actual.metadata, {"source": "unit-test", "path": "example"})
+
+    def test_dict_round_trip(self) -> None:
+        system = self._system()
+        self._assert_equivalent(system, NLevelSystem.from_dict(system.to_dict()))
+
+    def test_json_file_round_trip(self) -> None:
+        system = self._system()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "system.json"
+            written = system.save_json(path)
+            self.assertEqual(written, path)
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["schema_version"], 1)
+            self._assert_equivalent(system, NLevelSystem.load_json(path))
+
+    def test_summary_payload_is_not_rebuildable(self) -> None:
+        with self.assertRaisesRegex(ValueError, "include_arrays=True"):
+            NLevelSystem.from_dict(self._system().to_dict(include_arrays=False))
 
 
 class BasicMakerTests(unittest.TestCase):

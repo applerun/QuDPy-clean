@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field, fields as dataclass_fields, is_dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 import pickle
 from typing import Any
@@ -11,6 +11,7 @@ import numpy as np
 from qutip import Qobj
 
 from qudpy_sjh.utils.core.parameters import NLevelPhysicalParams, SolverParams
+from qudpy_sjh.utils.serialization import json_safe as _json_safe
 
 
 def _require_pandas():
@@ -19,39 +20,6 @@ def _require_pandas():
     except ImportError as exc:
         raise RuntimeError("pandas is required for dataframe export. Install pandas in this environment.") from exc
     return pd
-
-
-def _complex_matrix_to_json(value: Any) -> list:
-    array = np.asarray(value, dtype=np.complex128)
-    return [[{"real": float(item.real), "imag": float(item.imag)} for item in row] for row in array]
-
-
-def _json_safe(value: Any) -> Any:
-    if type(value).__name__ == "ParaNormalizer":
-        return {"class": "ParaNormalizer", "note": "runtime object omitted from JSON metadata"}
-    if hasattr(value, "grouped_params") and type(value).__name__ == "NLevelPhysicalParams":
-        return _json_safe(value.grouped_params)
-    if hasattr(value, "to_dict") and callable(value.to_dict):
-        return _json_safe(value.to_dict())
-    if is_dataclass(value):
-        return _json_safe({item.name: getattr(value, item.name) for item in dataclass_fields(value)})
-    if isinstance(value, Qobj):
-        return {"qobj_shape": list(value.shape), "data": _complex_matrix_to_json(value.full())}
-    if isinstance(value, complex):
-        return {"real": float(value.real), "imag": float(value.imag)}
-    if isinstance(value, np.ndarray):
-        if np.iscomplexobj(value):
-            return _json_safe(value.tolist())
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return _json_safe(value.item())
-    if callable(value):
-        return {"callable_serialized": False, "repr": repr(value)}
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
 
 
 def _time_axis_fs(times: np.ndarray, times_fs: np.ndarray | None) -> np.ndarray:

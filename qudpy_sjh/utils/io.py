@@ -7,51 +7,17 @@ Internal code-unit diagnostics are still saved, but only under explicit names.
 from __future__ import annotations
 
 import csv
-import json
-from dataclasses import dataclass, fields as dataclass_fields, is_dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from qudpy_sjh.utils.core.results import DynamicsResult
+from qudpy_sjh.utils.serialization import json_safe as _json_safe
+from qudpy_sjh.utils.serialization import write_json
 
 ResultLike = DynamicsResult
-
-
-def _json_safe(value: Any) -> Any:
-    if type(value).__name__ == "ParaNormalizer":
-        return {"class": "ParaNormalizer", "note": "runtime object omitted from JSON metadata"}
-    if type(value).__name__ == "NLevelPhysicalParams":
-        if hasattr(value, "grouped_params"):
-            return _json_safe(value.grouped_params)
-        payload = {
-            item.name: getattr(value, item.name)
-            for item in dataclass_fields(value)
-            if item.name != "field"
-        }
-        field_value = getattr(value, "field", None)
-        payload["field"] = None if field_value is None else _json_safe(field_value)
-        return _json_safe(payload)
-    if hasattr(value, "to_dict") and callable(value.to_dict):
-        return _json_safe(value.to_dict())
-    if is_dataclass(value):
-        return _json_safe({item.name: getattr(value, item.name) for item in dataclass_fields(value)})
-    if isinstance(value, complex):
-        return {"real": float(value.real), "imag": float(value.imag)}
-    if isinstance(value, np.ndarray):
-        if np.iscomplexobj(value):
-            return _json_safe(value.tolist())
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return _json_safe(value.item())
-    if callable(value):
-        return {"callable_serialized": False, "repr": repr(value)}
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    return value
 
 
 def format_value_tag(value: float) -> str:
@@ -139,10 +105,8 @@ def default_output_path(output_dir: Path, result: ResultLike) -> Path:
 
 
 def save_parameter_summary(results: list[ResultLike], output: Path) -> Path:
-    output.parent.mkdir(parents=True, exist_ok=True)
     data = [result.parameter_summary_dict() for result in results]
-    output.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    return output
+    return write_json(output, data)
 
 
 def _append_results_csv_row(path: Path, header: list[str], row: dict[str, Any]) -> None:
@@ -842,35 +806,27 @@ def _write_metadata_files(
     output_files = _relative_output_files(case_dir, metadata_outputs)
 
     if save_debug_meta:
-        debug_path.write_text(
-            json.dumps(
-                _debug_metadata(
-                    result,
-                    example_name=example_name,
-                    condition_name=condition_name,
-                    case_name=case_name,
-                ),
-                indent=2,
-                ensure_ascii=False,
+        write_json(
+            debug_path,
+            _debug_metadata(
+                result,
+                example_name=example_name,
+                condition_name=condition_name,
+                case_name=case_name,
             ),
-            encoding="utf-8",
         )
         metadata_paths["debug_meta"] = debug_path
 
     if save_human_meta:
-        meta_path.write_text(
-            json.dumps(
-                _human_metadata(
-                    result,
-                    example_name=example_name,
-                    condition_name=condition_name,
-                    case_name=case_name,
-                    output_files=output_files,
-                ),
-                indent=2,
-                ensure_ascii=False,
+        write_json(
+            meta_path,
+            _human_metadata(
+                result,
+                example_name=example_name,
+                condition_name=condition_name,
+                case_name=case_name,
+                output_files=output_files,
             ),
-            encoding="utf-8",
         )
         metadata_paths["meta"] = meta_path
 

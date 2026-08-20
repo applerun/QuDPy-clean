@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import csv
-import json
 import sys
 from typing import Any
 
@@ -48,6 +47,7 @@ from qudpy_sjh.utils.core import (
     run_case,
 )
 from qudpy_sjh.utils.fields import make_default_gaussian_carrier_field
+from qudpy_sjh.utils.serialization import write_json
 from qudpy_sjh.utils.spectroscopy import lab_frame_fft_response_legacy, polarization_C_per_m2
 
 
@@ -65,11 +65,6 @@ PLOT_ENERGY_RANGE_EV = (1.10, 2.10)
 
 def _window_label(window: str | None) -> str:
     return "none" if window is None else str(window)
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -406,7 +401,7 @@ def main() -> None:
         },
         "sanity": sanity,
     }
-    _write_json(OUTPUT_DIR / "window_effect_absorption_compare_metadata.json", metadata)
+    write_json(OUTPUT_DIR / "window_effect_absorption_compare_metadata.json", metadata)
 
     print("Window-effect absorption comparison finished.")
     print(f"absorption figure: {absorption_fig}")

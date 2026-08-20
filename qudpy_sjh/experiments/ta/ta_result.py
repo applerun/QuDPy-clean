@@ -20,41 +20,13 @@ Legacy / deprecation policy:
 from __future__ import annotations
 
 import csv
-import json
-from dataclasses import dataclass, field as dataclass_field, fields as dataclass_fields, is_dataclass
+from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path
 from typing import Any, Sequence
 
 import numpy as np
 
-
-def _json_safe(value: Any) -> Any:
-    if hasattr(value, "to_dict") and callable(value.to_dict):
-        return _json_safe(value.to_dict())
-    if is_dataclass(value):
-        return _json_safe({item.name: getattr(value, item.name) for item in dataclass_fields(value)})
-    if isinstance(value, complex):
-        return {"real": float(np.real(value)), "imag": float(np.imag(value))}
-    if isinstance(value, np.ndarray):
-        return _json_safe(value.tolist())
-    if isinstance(value, np.generic):
-        return _json_safe(value.item())
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    if callable(value):
-        return {"callable_serialized": False, "repr": repr(value)}
-    return value
-
-
-def write_json(path: str | Path, payload: dict[str, Any]) -> Path:
-    output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(_json_safe(payload), indent=2, ensure_ascii=False), encoding="utf-8")
-    return output
+from qudpy_sjh.utils.serialization import write_json
 
 
 def write_rows(path: str | Path, rows: list[dict[str, Any]]) -> Path:
