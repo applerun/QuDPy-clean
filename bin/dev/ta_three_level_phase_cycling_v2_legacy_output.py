@@ -220,20 +220,34 @@ def _select_delays(config, *, quick: bool, max_delays: int | None) -> tuple[floa
 
 
 BaseParamsBuilder = Callable[[Any, Any, Any, Any], tuple[Any, dict[str, Any]]]
+ConfigTransform = Callable[[Any], Any]
+
+
+def _phase_title(phase: float) -> str:
+    ratio = float(phase) / np.pi
+    if np.isclose(ratio, 0.0, rtol=0.0, atol=1.0e-12):
+        return "pump phase 0"
+    if np.isclose(ratio, 1.0, rtol=0.0, atol=1.0e-12):
+        return "pump phase pi"
+    return f"pump phase {ratio:.6g} pi"
 
 
 def run_v2_legacy_output(
     args: argparse.Namespace,
     *,
     base_params_builder: BaseParamsBuilder | None = None,
+    config_transform: ConfigTransform | None = None,
     example_name: str = "ta_three_level_intrinsic_response_phase_cycling_demo_v2_legacy_output",
     workflow_extra: dict[str, Any] | None = None,
+    include_previews: bool = True,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     legacy = _load_module(LEGACY_DEMO_PATH, "ta_phase_cycling_legacy_output_reference")
     smoke_v2 = _load_module(SMOKE_V2_PATH, "ta_phase_cycling_v2_smoke_reference")
 
     config = _make_config(legacy, smoke_v2, args)
+    if config_transform is not None:
+        config = config_transform(config)
     output_dir = args.output_dir.resolve() if args.output_dir is not None else DEFAULT_OUTPUT_DIR
     data_dir = output_dir / "data"
     plot_dir = output_dir / "figures" / "plot"
@@ -400,22 +414,19 @@ def run_v2_legacy_output(
 
     figure_paths: dict[str, str] = {}
     phase_titles = {
-        "0": "pump phase 0",
-        "pi2": "pump phase π/2",
-        "pi": "pump phase π",
-        "3pi2": "pump phase 3π/2",
+        label: _phase_title(phase)
+        for label, phase in zip(phase_names, config.pump_phase_cases_rad)
     }
     phase_filenames = {
-        "0": "ta_phase_case_0.png",
-        "pi2": "ta_phase_case_pi2.png",
-        "pi": "ta_phase_case_pi.png",
-        "3pi2": "ta_phase_case_3pi2.png",
+        label: f"ta_phase_case_{label}.png"
+        for label in phase_names
     }
+    phase_step_count = len(phase_names)
 
     figure_paths["phase_avg_autoscale"] = str(
         legacy.plot_one_map(
             path=plot_dir / "ta_phase_avg_autoscale.png",
-            title="TA map: 4-step pump-phase average",
+            title=f"TA map: {phase_step_count}-step pump-phase average",
             energy_eV=energy_eV,
             delays_fs=delays_array,
             values=ta_phase_avg,
@@ -423,11 +434,17 @@ def run_v2_legacy_output(
             vlim=None,
         )
     )
+    if phase_step_count <= 4:
+        compare_phase_indices = tuple(range(phase_step_count))
+    else:
+        compare_phase_indices = tuple(
+            int(index)
+            for index in np.linspace(0, phase_step_count - 1, 4, dtype=int)
+        )
     compare_maps_norm = [
-        ("phase 0", phase_maps[0]),
-        ("phase π/2", phase_maps[1]),
-        ("phase π", phase_maps[2]),
-        ("phase 3π/2", phase_maps[3]),
+        (phase_titles[phase_names[index]], phase_maps[index])
+        for index in compare_phase_indices
+    ] + [
         ("phase average", ta_phase_avg),
         ("phase-case RMS", ta_phase_rms),
     ]
@@ -457,7 +474,10 @@ def run_v2_legacy_output(
     figure_paths["legacy_phase_avg_shared"] = str(
         legacy.plot_one_map(
             path=legacy_dir / "ta_phase_avg.png",
-            title="TA map: 4-step pump-phase average, shared raw scale",
+            title=(
+                f"TA map: {phase_step_count}-step pump-phase average, "
+                "shared raw scale"
+            ),
             energy_eV=energy_eV,
             delays_fs=delays_array,
             values=ta_phase_avg,
@@ -502,7 +522,8 @@ def run_v2_legacy_output(
         return int(np.argmin(np.abs(delays_array - float(target_fs))))
 
     delay_to_trace: dict[float, dict[str, Any]] = {}
-    for target_delay in config.preview_delays_fs:
+    preview_delays_fs = config.preview_delays_fs if include_previews else ()
+    for target_delay in preview_delays_fs:
         idx = nearest_delay_index(float(target_delay))
         actual_delay = float(delays_array[idx])
         trace_plan = TASingleDelayPlan(
@@ -577,12 +598,13 @@ def run_v2_legacy_output(
             )
         )
 
-    figure_paths["preview_figure_1_field_polarization"] = str(
-        legacy.plot_field_polarization_selected_delays(
-            path=preview_dir / "figure_1_field_polarization_selected_delays.png",
-            delay_to_trace=delay_to_trace,
+    if delay_to_trace:
+        figure_paths["preview_figure_1_field_polarization"] = str(
+            legacy.plot_field_polarization_selected_delays(
+                path=preview_dir / "figure_1_field_polarization_selected_delays.png",
+                delay_to_trace=delay_to_trace,
+            )
         )
-    )
 
     all_delay_spectra_csv = legacy.write_all_delay_spectra_csv(
         data_dir / "ta_all_delay_spectra.csv",
@@ -633,11 +655,14 @@ def run_v2_legacy_output(
             "probe_only_case_key": "probe_only",
             "phase_case_pattern": "phase_<label>_delay_<delay>_fs",
             "trace_case_pattern": "trace_delay_<delay>_phase_0",
+            "preview_traces_enabled": bool(include_previews),
         },
         "phase_cases": {
             "pump_phase_rad": list(config.pump_phase_cases_rad),
             "probe_phase_rad": config.probe_phase_rad,
-            "physical_phase_average": "unweighted arithmetic mean across four pump phases",
+            "physical_phase_average": (
+                f"unweighted arithmetic mean across {phase_step_count} pump phases"
+            ),
             "diagnostic_unitnorm_average": (
                 "Each phase map is divided by its own p99 abs value before averaging. "
                 "This is not a physical phase-cycling result."
