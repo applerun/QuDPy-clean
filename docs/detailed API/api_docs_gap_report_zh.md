@@ -5,7 +5,7 @@
 当前已有文档已经覆盖：
 
 - physical-field-first 主线；
-- `FieldPhyRoot / FieldPhySeries / TAField / TwoDESField`；
+- `FieldPhyRoot / CarrierEnvelopeField / FieldPhySeries`；
 - `ParaNormalizer` 的归一化职责；
 - metadata schema 的顶层结构；
 - 不恢复 solver-unit field、RWA drive 和 core `ParameterSweep` 的边界。
@@ -51,7 +51,7 @@
 
 优先级：高。
 
-原因：当前 TA intrinsic response 和 window diagnostic 都依赖 `sjh_learn.utils.spectroscopy`。尤其需要写清楚 `lab_frame_fft_response()` 已经负责 FFT、frequency axis、positive-frequency mask、small-denominator mask，不应在 example 中重复实现。
+原因：当前 TA intrinsic response 和 window diagnostic 都依赖 `qudpy_sjh.utils.spectroscopy`。尤其需要写清楚 `lab_frame_fft_response()` 已经负责 FFT、frequency axis、positive-frequency mask、small-denominator mask，不应在 example 中重复实现。
 
 应覆盖：
 

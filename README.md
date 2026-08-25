@@ -221,6 +221,7 @@ qudpy_sjh/
 ```text
 docs/document_summary.md
 docs/deprecated_boundaries_zh.md
+docs/detailed API/pulse_sequence_phase_cycling_architecture_zh.md  # target architecture source of truth
 docs/detailed API/field_zh.md
 docs/detailed API/parameters_zh.md
 docs/detailed API/normalizer_zh.md

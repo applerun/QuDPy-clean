@@ -1,6 +1,9 @@
-# sjh_learn
+# qudpy_sjh
 
-`sjh_learn` 是当前用来学习 two-level optical Bloch dynamics 的小型 QuTiP 项目。现在的主线已经收口到单轨迹架构：一次求解只产生一个 `DynamicsResult`，顶层脚本负责决定要跑哪些 case、怎样拼图、怎样保存最终图像。
+`qudpy_sjh` 是 QuDPy-clean 当前源码包。主线使用单轨迹架构：一次求解只产生一个 `DynamicsResult`，上层 experiment/recipe 或脚本负责决定需要执行哪些 case，以及如何组合和保存结果。
+
+Phase-cycling、readout 与 recipe 的目标架构以
+`docs/detailed API/pulse_sequence_phase_cycling_architecture_zh.md` 为准。该文档会明确区分 current implementation 与尚未迁移的 target architecture。
 
 ## 当前架构
 
@@ -18,18 +21,20 @@
 
 `utils/fields/` 按物理含义和单位边界拆分：
 
-- `utils/fields/lab_fields.py`：用户侧 lab-frame physical field，包括 `CarrierFieldPhysical` 和 `GaussianCarrierFieldPhysical`。
-- `utils/fields/field_series.py`：physical-layer 多场组合，包括 `FieldPhySeries`、`TAField` 和 `TwoDESField`。
+- `utils/fields/lab_fields.py`：定义用户侧 lab-frame physical field 基类与通用 wrapper。
+- `utils/fields/carrier_envelope/`：定义 `CarrierSpec`、`EnvelopeSpec` 和 `CarrierEnvelopeField`。
+- `utils/fields/field_series.py`：定义 physical-layer 多场组合 `FieldPhySeries`。
 - `utils/fields/__init__.py`：公共 re-export，只导出 physical field API。
 
-用户侧 field class 只使用物理单位。`CarrierFieldPhysical.__call__(t_fs)` 返回单位为 `MV/cm` 的 `E(t)`。普通示例应显式构造 physical field，再传入 `NLevelPhysicalParams(..., field=field)`；solver 内部 code-unit callable 只能由 `ParaNormalizer.make_code_field()` 生成。
+用户侧 field class 只使用物理单位。`FieldPhyRoot.__call__(t_fs)` 返回单位为 `MV/cm` 的 `E(t)`。普通示例应显式构造 physical field，再传入 `NLevelPhysicalParams(..., field=field)`；solver 内部 code-unit callable 只能由 `ParaNormalizer.make_code_field()` 生成。
 
 已支持：
 
-- `CarrierFieldPhysical`: lab frame 载波场，`E(t) = 2E0 cos(omega t + phase)`。
-- `GaussianCarrierFieldPhysical`: lab frame 高斯包络载波场。
+- `CarrierEnvelopeField`: 单 carrier、单 envelope 的 finite lab-frame optical field。
+- `GaussianEnvelopeSpec` / `SechEnvelopeSpec` / `ConstantEnvelopeSpec`: physical envelope definitions。
 - `FieldPhySeries`: physical-layer 多个 field 相加。
-- `TAField` / `TwoDESField`: TA / 2DES 常用多脉冲 field。
+
+pump / probe / LO 是 experiment-level role，应由 `FieldPhySeries.sub_field_names`、pulse sequence 或 recipe metadata 表达，不由特殊 TA/2DES field class 表达。
 
 每个 field/drive 支持：
 
@@ -109,26 +114,14 @@ outdir/
 
 ## Demo 和 Example
 
-`sjh_learn/bin/multilevel_demo.py` 是当前 N-level explicit-field API demo：脚本显式构造 field 对象，再传入 `NLevelPhysicalParams(..., field=field)`。
-
-`sjh_learn/bin/n2_equivalence_check.py` 是 N=2 regression check，用来确认 N=2 physical mainline 与显式 normalize+solver 路径保持一致。
-
-稳定示例放在 `sjh_learn/examples/absorption/`：
-
-- `cw_pulse_absorption_compare.py`：保留 lab_exact 主线和 legacy RWA 对比分支；默认不运行 RWA。
-- `three_level_absorption_lab_exact.py`：two-level 与 three-level lab_exact absorption 对比。
-- `absorption_01_chi_analytic.py`：解析 two-level linear susceptibility 参考。
-
-`scratch/` 只保留临时验证脚本，不放稳定 example。
+当前维护的用户示例位于仓库级 `bin/examples/`。TA examples 的用途和分类见
+`bin/examples/ta/README.md`；源码包内的 `scratch/` 仅用于临时验证，不应视为
+canonical public workflow。
 
 ## 运行检查
 
 ```powershell
-conda --no-plugins run -n quantum python -m compileall sjh_learn scratch
-conda --no-plugins run -n quantum python sjh_learn\bin\multilevel_demo.py
-conda --no-plugins run -n quantum python sjh_learn\bin\n2_equivalence_check.py
-conda --no-plugins run -n quantum python sjh_learn\examples\absorption\cw_pulse_absorption_compare.py
-conda --no-plugins run -n quantum python sjh_learn\examples\absorption\three_level_absorption_lab_exact.py
+conda --no-plugins run -n quantum python -m compileall qudpy_sjh
 ```
 
 当前阶段 QuDPy 主线维护 lab-frame / exact solver；RWA solver-unit drive 路径默认禁用，
@@ -137,11 +130,11 @@ conda --no-plugins run -n quantum python sjh_learn\examples\absorption\three_lev
 推荐的 field 输入方式是显式构造 physical field：
 
 ```python
-field = make_default_gaussian_carrier_field(
+field = make_gaussian_carrier_envelope_field(
     E0_MV_per_cm=0.05,
     laser_energy_eV=1.625,
-    pulse_center_fs=0.0,
-    pulse_sigma_fs=8.0,
+    center_fs=0.0,
+    sigma_fs=8.0,
 )
 
 params = NLevelPhysicalParams(
@@ -181,7 +174,8 @@ core solver API。推荐写普通上层循环：
 
 ```python
 results = []
-for scan_params, field in iter_ta_gaussian_fields(...):
+for scan_params in scan_cases:
+    field = build_field(scan_params)
     params = NLevelPhysicalParams(
         energies_eV=...,
         dipole_matrix_D=...,

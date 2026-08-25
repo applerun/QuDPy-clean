@@ -1,886 +1,391 @@
-# Pulse Sequence 与 Phase Cycling 架构说明
+# Phase Cycling / Readout / Recipe 目标架构
 
-本文档描述 QuDPy 中 TA / multi-pulse / phase-cycling 的长期分层架构。
-当前已经建立通用 multi-pulse single-run scaffold，并在 Milestone 2 中
-为 `CarrierEnvelopeField` 增加正式 field-level phase override API。
-Milestone 3 已新增 generic `SingleRunPlan / ReadoutSpec`，用于把一次
-concrete pulse sequence 接入 `run_case` 并执行可选通用 readout。
-Milestone 4 已新增 generic `PhaseGrid / PhaseCyclingPlan`，用于对任意
-`SingleRunPlan` 执行 phase grid 并按 `target_phase_vector` 做 Fourier
-projection。Milestone 4.5 已新增 generic projected-result bundle，用于
-把 Fourier-projected signal 与非投影 axis metadata 配对。具体 TA /
-2DES experiment recipe 仍属于后续阶段。
+> **Source of truth**
+>
+> 本文档是 QuDPy 目标 phase-cycling、readout 与 recipe 架构的权威说明。
+> 后续实现、测试、example 和其他文档应以本文档为准。若当前源码与本文档
+> 不一致，应把差异视为待迁移项，而不是修改本文档以迁就 legacy 行为。
 
-## 总体原则
+本文档冻结术语、数学 convention、层级职责、目标数据流和已知迁移边界。
+它不表示所有目标能力已经实现。当前实现状态与目标状态必须明确区分。
 
-默认模拟流程只负责一次给定 field configuration 的传播与 readout：
+## Current implementation 与 Target architecture
 
-```text
-field construction
--> system propagation
--> polarization / output field
--> spectrum / readout
-```
+当前源码已经具备可靠的 physical field、pulse sequence 和基础 phase-grid
+表达能力，但尚未完成目标 workflow。特别是：
 
-默认流程不内置 phase cycling，也不默认假设 TA、2DES 或其他具体实验。
-phase cycling 属于更高层实验逻辑，由独立 cycler / experiment runner
-负责。底层保留 pulse 的 `phase_tag`、`phase_rad` 和
-`independent_phase` metadata；当 field backend 支持 phase override 时，
-`phase_rad` 会真实改变构造出的场。
+- 当前 Fourier projection 的 public/default behavior 仍包含 legacy
+  `sign=-1`；目标 convention 是固定的 `+i` projection；
+- 当前 `ReadoutSpec` 和 readout execution 嵌在 `SingleRunPlan` 中；
+- 当前 heavy `PhaseCyclingPlan` 会生成 case、执行 solver/readout 并做投影；
+- 当前 TA phase-cycling scaffold 在 recipe-specific postprocess 之前投影
+  pump-probe readout；
+- 当前一个 `PhaseCyclingPlan` 只接受一个 target，多个 target 会导致昂贵
+  计算被重复编排；
+- 当前存在 `ProjectedReadoutBundle`、`TAPhaseCycledPumpProbeResult` 等目标中
+  将废弃的 wrapper；
+- 当前部分 API 使用 `absorption` 表示
+  `omega * Im[P(omega) / E(omega)]`，它不是 detector intensity。
 
-## 三层结构
+以上均是已知 mismatch，不是本文档遗漏。Milestone 0 只冻结语言和目标边界，
+不改变 runtime behavior。
 
-### Layer 1: generic multi-pulse single-run simulation
+## 核心原则
 
-Layer 1 只描述一次具体 field configuration：
+1. `System` 是 matter，`Field` 是 perturbation，`SolverParams` 是数值求解配置。
+2. physical pulse count 不等于 phase-dimension count。
+3. phase semantics 位于 pulse-sequence / recipe 层，不放进 raw physical Field。
+4. Recipe 描述对一个给定 System 做什么实验；System scan 由上层脚本管理。
+5. readout physics 与 solver execution 分离。
+6. Recipe 先把多个 `ReadoutResult` 组合为实验 observable `S(...)`，然后才做
+   generic phase projection。
+7. generic phase-projection 层只处理预先计算好的 array-valued `S(...)`，不执行
+   solver、readout 或 recipe postprocess。
+8. 一份 `S(phi)` 必须可以投影多个 target phase-order vectors，而不重复昂贵计算。
+9. 数据容器保持最简：NumPy ndarray、axis names、axis values 和必要 metadata。
+10. 新架构优先于 backward compatibility；旧 API 在新 workflow 完成验证后再弃用。
 
-```text
-PulseSpec / FieldGroupSpec / PulseSequenceSpec
--> concrete FieldPhySeries
--> run_case
--> readout / spectrum
-```
+## Terminology Table
 
-本层不关心 delay grid、TA subtraction、2DES target channel 或 phase
-projection。`PulseSequenceSpec.build_field(...)` 只把任意数量的 pulse /
-field group 构造成一次可传给 `NLevelPhysicalParams.field` 的
-`FieldPhySeries`。
+| Term | Exact meaning | Owning layer | Current code representation | Target status |
+| --- | --- | --- | --- | --- |
+| System | Hamiltonian、basis、dipole、initial state、relaxation、dephasing 等 matter physics | System | `NLevelSystem`；底层仍会转换为 `NLevelPhysicalParams` | 保留概念；完善 adapter 属于独立任务 |
+| SystemScanAxis | 在不同 System 间扫描的上层坐标，例如 PB、EIS、EID、temperature、model member | Upper-level orchestration | 当前主要由 scripts/examples 的循环表达；无必需 runtime class | 不进入 Recipe；不要求新增 class |
+| Field | 进入 Hamiltonian 的 physical perturbation field | Field | `FieldPhyRoot` 及实现类 | 保留 |
+| FieldPhyRoot | physical field 的抽象接口，使用物理时间与场强单位 | Field | `qudpy_sjh.utils.fields.lab_fields.FieldPhyRoot` | 保留 |
+| CarrierEnvelopeField | 单 carrier、单 envelope 的 finite physical optical field | Field | `CarrierEnvelopeField` | 保留 |
+| FieldPhySeries | 多个 physical fields 的线性和及 named subfields | Field | `FieldPhySeries` | 保留 |
+| PulseSpec | physical field template 加 pulse timing/base phase/phase-tag metadata | PulseSequence | `PulseSpec` | 保留 |
+| FieldGroupSpec | 多个 coherent physical pulses 的组合，可共享 group phase tag | PulseSequence | `FieldGroupSpec` | 保留当前名称 |
+| PulseSequenceSpec | 一次 acquisition condition 的 pulse/group composition，可构造 concrete physical field | PulseSequence | `PulseSequenceSpec` | 保留 |
+| SingleRunFieldPlan | 当前一次 concrete centers/phases 的 field-construction record | PulseSequence / execution boundary | `SingleRunFieldPlan` | 暂缓 rename/removal，后续重新评估 |
+| SingleRunPlan | 对一个 concrete physical field 执行一次 dynamics simulation 的计划 | Execution | 当前还包含 `ReadoutSpec` 并在 `execute()` 中做 readout | 目标只负责 solver/dynamics execution |
+| SimRes | 一次昂贵 dynamics simulation 的 canonical result | Execution | 当前 canonical class 是 `DynamicsResult` | 概念名可用 `SimRes`；当前实现继续用 `DynamicsResult` |
+| SolverParams | time grid、tolerance、integrator/backend、numerical options、checkpoint settings | Execution | 当前高层 `NLevelPhysicalParams` 混合 System/Field/time grid；当前 `SolverParams` 是归一化内部摘要 | 目标概念已冻结；runtime 重构不在 M0 |
+| Recipe | 对一个给定 System 定义实验 cases、coordinates、readout、postprocess 和 targets 的轻量 script/module | Recipe | TA 当前由多种 `TA*Plan/Spec` 类和 examples 表达 | 目标保持轻量，不要求 generic Recipe base class |
+| Condition | 同一个 System 下不同 acquisition configuration，例如 pump on/off、probe on/off、chopper 或 LO state | Recipe | 当前 TA 使用 pump-probe/probe-only cases | 不代表不同 material/System |
+| recipe coordinate | Recipe 自己定义的非 phase 实验坐标，例如 TA 的 `T` 或 2DES 的 `tau, T, t` | Recipe | 当前 TA delay fields/classes | 不创建 generic DelayAxis/ConditionAxis |
+| phase dimension | 一个真正被 phase cycling 的、独立可控的 physical/mathematical phase degree of freedom | Recipe / phase domain | 由 pulse/group phase semantics 与 `PhaseGrid` 共同表达 | 正式术语 |
+| phase_tag | 在代码中标识一个 phase dimension 的字符串 identifier | PulseSequence / phase domain | `PulseSpec.phase_tag`、`FieldGroupSpec.phase_tag`、`PhaseGrid.tags` | 正式代码术语 |
+| PhaseGrid | phase tags 到 phase samples 的映射及其 Cartesian-product domain | Generic phase projection | `PhaseGrid` | 保留；扩展 uniform-grid convenience |
+| phase order | observable 对某个 cycled phase dimension 的整数 Fourier/pathway order | Physics / Recipe | 当前 target coefficient | 正式物理术语 |
+| phase-order vector | 所有 phase dimensions 的整数 order vector `m=(m_1,...,m_D)` | Physics / Recipe | `dict[str, int]` | 正式物理术语 |
+| target_phase_vector | phase_tag 到 physical phase order 的代码映射 | Recipe / generic projection boundary | `target_phase_vector` | 保留名称；未来不暴露 configurable sign semantics |
+| ReadoutField | coherent detection 使用的 field object/reference；可来自 interaction field，也可为 external LO | Readout | 当前 `readout_field_name` 只能选择 interaction field/其 subfield | 目标支持 named reference 或 external `FieldPhyRoot` |
+| ReadoutPlan | 把 polarization 转换为 detector/readout observable 的 callable plan | Readout | 尚不存在；`ReadoutSpec` 只是配置并由外部函数执行 | 后续 behavioral redesign，不是简单 rename |
+| ReadoutResult | 一次 readout 执行得到的 detector/readout data 与 axes/metadata | Readout | 当前近似对应 `SingleRunReadoutResult` | 后续独立于 `SingleRunResult` |
+| Recipe.postprocess | 匹配、复用、broadcast、组合多个 `ReadoutResult`，形成每个 phase case 的 `S(...)` | Recipe | 当前 TA subtraction 分散在 TA helper/plan 中 | 目标为普通 Recipe 方法/函数，不建 `PostprocessPlan` |
+| S(...) | recipe-specific postprocess 后、phase projection 前的 array-valued experimental observable | Recipe -> projection interface | 当前没有统一接口；可能直接投影 single-run readout | 正式接口；不限定为 polarization/intensity/absorption |
+| phase cycling | 实验上改变一个或多个独立 phase variables 并 acquisition 的过程/概念 | Experiment / Recipe | 当前也被用于 heavy runner 名称 | 保留实验术语 |
+| phase projection | 对已经计算好的 `S(phi)` 做离散 Fourier projection 得到 `S_m` | Generic phase projection | `fourier_project_phase_cases` 及 heavy `PhaseCyclingPlan` 的一部分 | 目标为 plain mathematical operation |
+| payload axis | `S` 中既非 phase dimension、也非 system-scan axis 的普通数据维度，例如 omega 或 detection time | Recipe data / analysis | 当前由 readout arrays 与 `AxisMetadataSpec` 松散表达 | 用 `axis_names`/`axis_values` 明确绑定 |
+| axis_names | 与 ndarray 每一维按位置一一对应的名称 tuple | Recipe data / generic projection | 当前没有统一 contract | 目标最小 contract |
+| axis_values | axis name 到一维 coordinate values 的 mapping | Recipe data / generic projection | 当前 bundle 中有松散 `axes` dict | 目标最小 contract |
+| UFANSYS / user analysis | FFT、plotting、alignment、selection、slicing 与后续 spectroscopy analysis | Analysis | 仓库外/用户脚本 | 不进入 Recipe 或 phase projection core |
 
-### Layer 2: generic phase cycler
+## 容易混淆的术语
 
-Layer 2 建立在 Layer 1 的 phase metadata 上：
+### Phase dimension 与 phase_tag
 
-```text
-collect phase_tags
--> generate phase grid
--> apply phase vector to pulse sequence
--> run many single-run cases
--> Fourier projection by target_phase_vector
-```
+`phase dimension` 是物理和数学自由度；`phase_tag` 是标识该自由度的程序字符串。
+例如 `phi_pump` 是 phase dimension，代码可以用 `phase_tag="pump"` 表示它。
 
-generic cycler 不写死 TA 或 2DES。它只根据 `phase_tags`、
-`target_phase_vector` 和 phase grid 重复调用 `SingleRunPlan`，提取指定
-readout array，并做 Fourier projection。
+当前 `PulseSpec` / `FieldGroupSpec` 还包含 `independent_phase`。它可能和
+`phase_tag`、`PhaseGrid` 形成第二套 independence source of truth。M0 只记录
+该风险；后续应决定是否清理，当前 runtime 不变。
 
-### Layer 3: experiment recipes
-
-Layer 3 定义具体非线性光谱实验：
-
-- TA recipe：pump/probe pulse sequence、pump-on/off 或 probe-only
-  reference、delay-energy map、`S_TA = S_pump_probe - S_probe_only`。
-- 2DES recipe：pulse1/pulse2/pulse3/readout sequence、rephasing /
-  non-rephasing / double-quantum target vectors、`t1/t2/t3` grid 和二维
-  Fourier transform。
-- 其他 nonlinear spectroscopy recipe 可复用同一 pulse-sequence 与
-  phase-cycling 基础层。
-
-## 为什么本轮先做 pulse-sequence scaffold
-
-phase cycling 依赖底层 pulse sequence 的 phase_tag 语义。如果没有
-`PulseSpec / FieldGroupSpec / PulseSequenceSpec`，phase cycler 只能是
-孤立的数学工具，无法可靠接入真实 field construction。
-
-本轮先让框架能够表达：
-
-```text
-任意 pulse sequence 的一次模拟
-```
-
-后续 cycler 再对这些 pulse 或 field group 的 `phase_tag` 做扫描和
-Fourier projection。
-
-## 当前 TA prototype 的定位
-
-`qudpy_sjh/experiments/ta/ta_settings.py`、
-`ta_case_plan.py`、`ta_result.py` 是 experimental TA recipe v1 prototype。
-它们已经包含 pump/probe、probe-only reference、
-`S_TA = S_pump_probe - S_probe_only`、TA map 和 TA IO 等具体 TA 语义。
-
-这些文件的定位是：
-
-- 当前未被 phase-cycling validation demo 使用；
-- 作为 historical reference、IO/export behavior reference、migration
-  comparison 和 regression reference；
-- 不是 generic pulse-sequence simulation framework；
-- 不是当前 TA recipe v2 主线；
-- 作为 frozen reference 暂时保留；
-- 当前不默认执行 phase cycling；
-- 新开发优先使用 `qudpy_sjh.experiments.pulse_sequence` 和
-  `qudpy_sjh.experiments.ta.ta_recipe_v2`。
-
-## Legacy TA v1 prototype audit / deprecation policy
-
-legacy TA v1 prototype 文件包括：
-
-- `qudpy_sjh/experiments/ta/ta_settings.py`
-- `qudpy_sjh/experiments/ta/ta_case_plan.py`
-- `qudpy_sjh/experiments/ta/ta_result.py`
-
-当前策略：
-
-- v1 保留为 legacy / frozen reference；
-- v1 不删除、不移动、不重构执行逻辑；
-- v1 不在运行时发 `DeprecationWarning`，避免污染测试输出；
-- v2 主线位于 `qudpy_sjh/experiments/ta/ta_recipe_v2.py`，并复用 generic
-  pulse-sequence / single-run / phase-cycling framework；
-- 待 v2 IO/export 和 old demo migration 完成后，再考虑把 v1 移到
-  `ta/legacy/` 或删除。
-
-功能覆盖关系：
-
-| 功能 | v1 prototype | v2 current status | 处理建议 |
-| --- | --- | --- | --- |
-| settings | `TASettings` 已有完整 v1 配置 | v2 以 plan/spec/dataclass 小对象表达当前最小主线 | 新开发优先 v2；v1 作为配置参考 |
-| single-run orchestration | `TAPlan` / `TADelayCasePlan` 直接编排 v1 delay case | `SingleRunPlan` + `TASingleDelayPlan` 已覆盖单次 concrete run 编排 | 新开发走 generic single-run + v2 recipe |
-| probe-only reference | v1 已内置 probe-only reference | v2 `TASingleDelayPlan.make_probe_only_plan()` 已覆盖 | v2 主线继续沿用显式 reference |
-| pump-probe pair | v1 已内置 pump-probe case | v2 `TASingleDelayPairResult` 已覆盖 | v2 主线继续扩展 |
-| TA subtraction | v1 已内置 `pump_probe - probe_only` | v2 `compute_ta_contrast()` 已覆盖单 delay subtraction | 新验证优先 v2 |
-| delay scan | v1 已有 full delay scan 与输出策略 | v2 已有 delay scan scaffold 和 delay × energy map stack | v1 暂作 full-output reference；v2 后续补 IO/export |
-| phase cycling | v1 不默认执行 | v2 TA 尚未接入 phase cycling；generic `PhaseCyclingPlan` 已存在 | 后续单独设计 optional phase-cycling TA |
-| IO/export | v1 `TAResultIO` 已有默认导出 | v2 暂无 TAResultIO v2 | v1 作为 IO/export reference |
-| old demo migration | v1 demo 仍使用旧路径 | v2 尚未迁移旧 demo | v2 IO/export 完成后再迁移 |
-
-package-level API 导出策略：
-
-- legacy aliases：`LegacyTASettings`、`LegacyTAPlan`、
-  `LegacyTADelayScanPlan`、`LegacyTAResult`、`LegacyTAResultIO`；
-- v1 原裸名保持稳定：例如 package 顶层 `TADelayScanPlan` 继续指向
-  `ta_case_plan.TADelayScanPlan`；
-- v2 scan 显式 aliases：`TADelayScanPlanV2`、`TADelayScanResultV2`、
-  `TADelayScanMapV2`；
-- 不允许 v2 在 package 顶层静默覆盖已有 legacy 裸名；
-- 如需 v2 原类名，可直接从 `qudpy_sjh.experiments.ta.ta_recipe_v2`
-  导入。
-
-## phase_tag 语义
-
-`phase_tag` 属于 `PulseSpec` 或 `FieldGroupSpec`，默认不属于单个 carrier
-component。
-
-默认规则：
-
-- 一个 physical pulse 对应一个 `phase_tag`；
-- `FieldGroupSpec` 可以包含多个 carrier / component / pulse template；
-- 多载波或宽带 field group 不自动产生多个 `phase_tag`；
-- 只有用户显式声明 `independent_phase=True` 的 pulse 或 group，才作为
-  上层 cycler 的独立相位控制对象；
-- 如果 `FieldGroupSpec.phase_tag` 非空，group-level phase tag 优先，
-  group 内部多个 component 作为一个 coherent physical group 共享该 tag；
-  此时内部 pulse 不再暴露独立 `phase_tag`，以避免 group phase 与
-  component phase 同时进入同一个 `phase_vector`；
-- `target_phase_vector` 是 cycler 的 phase-channel 控制入口；
-- 当前阶段只预留 `target_phase_vector` 语义，不实现完整 runner。
-
-因此：
-
-- 宽带 pulse；
-- FROG 真实包络；
-- 多载波 pump/probe；
-- frequency-comb-like field group；
-
-默认都作为一个相干 physical pulse / field group 处理，共享一个 global
-phase tag。只有实验设计上具有独立相位控制的 component 才显式拆分。
-
-## system metadata 与 phase cycling 的边界
-
-`detuning` 是 system-field 关系，不是 matter system 自身属性。
-`transition_table` 和 `coupling_fs_inv` 是诊断或归一化派生信息。
-phase cycling 是 experiment-level Fourier projection。
-
-因此 human-facing `meta.json` 中的 bottom-level `params.system` 只保存
-matter system 定义和 dissipation。默认 propagation 只接受当前 concrete
-field configuration，不关心 phase projection。
-
-## TA recipe 示例
-
-TA recipe 可以由 Layer 3 定义：
+### Physical pulse 与 phase dimension
 
 ```text
-pump pulse
-probe pulse
-delay_fs
-probe-only reference 或 pump-on/off reference
-S_TA(omega, delay) = S_pump_probe(omega, delay) - S_probe_only(omega)
+pulse1 phase = phi_pump
+pulse2 phase = phi_pump
+probe  phase = phi_probe
 ```
 
-phase cycling 可作为上层可选 recipe：
+这是三个 physical pulses、两个 phase dimensions。多个 pulses 可以通过相同
+phase tag 或 coherent `FieldGroupSpec` 共享一个被 cycle 的 phase。固定相位 pulse
+不需要出现在 `PhaseGrid` 中；数学上它可视为 `N_j=1`，程序无需暴露该维度。
+
+### Phase cycling 与 phase projection
+
+- phase cycling：实验概念，包括设定 phase、进行 acquisition 和得到 phase cases；
+- phase projection：对预先计算好的 `S(phi)` 进行数学 Fourier projection。
+
+generic phase-projection 层不执行实验 case，也不执行 solver。
+
+### Recipe coordinate、phase dimension 与 SystemScanAxis
+
+- `T`、`tau`、`t` 是 recipe coordinates；
+- `phi_pump`、`phi_probe` 是 phase dimensions；
+- PB、EIS、EID、temperature、model member 是 SystemScanAxis coordinates。
+
+Recipe 决定前两类的实验含义。System scan 完全由上层脚本管理。
+
+### ReadoutResult 与 S
+
+`ReadoutResult` 是一个 acquisition case 经 detector/readout physics 得到的结果。
+`S` 是 Recipe 将一个或多个 `ReadoutResult` reuse、broadcast、combine 后形成的
+实验 observable。只有 `S` 进入 generic phase projection。
+
+## Adopted Fourier Convention
+
+一条 pathway 的 phase 与空间因子定义为：
 
 ```text
-target_phase_vector = {"pump": 0, "probe": 1}
+exp[-i * sum_j(s_j * phi_laser,j)]
+*
+exp[+i * sum_j(s_j * k_j dot r)]
 ```
 
-或按具体实验约定使用 pump net 0 + probe +1 channel。这个 target vector
-属于 recipe / cycler 层，不属于 `run_case` 或 `DynamicsResult`。
-
-## 2DES recipe 示例
-
-2DES recipe 可以定义：
+共享一个 pump phase 的多次 pump interaction 满足：
 
 ```text
-pulse1, pulse2, pulse3, readout
-phase tags: phi1, phi2, phi3, phi_lo
-t1, t2, t3 grid
+m_pu = sum_j(s_pu,j)
 ```
 
-常见 target vectors：
+一般 phase-order vector 为 `m=(m_1,...,m_D)`。采用的 projection convention 是：
 
 ```text
-rephasing       = {"pulse1": -1, "pulse2": +1, "pulse3": +1, "readout": -1}
-non_rephasing   = {"pulse1": +1, "pulse2": -1, "pulse3": +1, "readout": -1}
-double_quantum  = {"pulse1": +1, "pulse2": +1, "pulse3": -1, "readout": -1}
+S_m = 1/product_j(N_j)
+      * sum_over_phase_cases[
+          S(phi_1,...,phi_D)
+          * exp(+i * sum_j(m_j * phi_j))
+        ]
 ```
 
-具体符号约定由 2DES recipe 文档固定。二维 Fourier transform 属于 2DES
-readout/output 层，不属于 bottom-level pulse sequence。
-
-## 当前阶段未实现的内容
-
-当前阶段不实现：
-
-- phase-cycled TA subtraction / full phase-cycling TA recipe；
-- TAResultIO v2；
-- OD / relative difference / normalization variants；
-- interpolation / resampling / smoothing；
-- TA recipe v2 plotting；
-- TA recipe v2 npz / csv export；
-- 2DES recipe；
-- rephasing / non-rephasing / double-quantum recipe；
-- 2D Fourier transform；
-- phase-case checkpoint path builder；
-- piecewise / dark propagation；
-- `materialize_full`；
-- `DynamicsResult` 重写；
-- `run_case` 行为改变；
-- 旧 TA demo 迁移；
-- 默认 TAPlan phase cycling；
-- 将 `qudpy_sjh/experiments/ta/` prototype 改造成通用框架。
-
-## 当前新增 scaffold
-
-当前新增模块：
+uniform grid 为：
 
 ```text
-qudpy_sjh/experiments/pulse_sequence/
-  __init__.py
-  phase_cycling.py
-  pulse_sequence.py
-  single_run.py
-qudpy_sjh/experiments/ta/
-  ta_recipe_v2.py
+phi_j,n = 2*pi*n/N_j
 ```
 
-主要 API：
+所以：
 
 ```text
-validate_phase_tag
-validate_pulse_name
-normalize_phase_vector
-is_supported_phase_backend
-supports_phase_override
-PulseSpec
-FieldGroupSpec
-PulseSequenceSpec
-SingleRunFieldPlan
-ReadoutSpec
-SingleRunReadoutResult
-SingleRunCheckpointSettings
-SingleRunPlan
-SingleRunResult
-compute_single_run_readout
-PhaseGrid
-PhaseProjectionSpec
-PhaseCaseRecord
-PhaseCyclingPlan
-PhaseCyclingResult
-AxisMetadataSpec
-ProjectedReadoutBundle
-normalize_target_phase_vector
-phase_projection_weight
-fourier_project_phase_cases
-build_uniform_phase_grid
-extract_single_run_quantity
-build_projected_readout_bundle
-TADelayCenters
-TAReadoutBundle
-TASingleDelayPlan
-TASingleDelayPairResult
-extract_ta_absorption_bundle
-TASubtractionSpec
-TAContrastResult
-validate_ta_readout_bundle_axes
-compute_ta_contrast
-TAPhaseCyclingSpec
-TAPhaseCycledPumpProbeResult
-build_ta_pump_probe_phase_cycling_plan
-build_ta_phase_cycled_pump_probe_bundle
-ta_recipe_v2.TADelayScanMap
-validate_ta_contrast_axes_for_scan
-build_ta_delay_scan_map
-ta_recipe_v2.TADelayScanPlan
-ta_recipe_v2.TADelayScanResult
-package alias: TADelayScanMapV2
-package alias: TADelayScanPlanV2
-package alias: TADelayScanResultV2
+S(phi) proportional to exp(-i*k*phi)
+    -> target phase order m = k
 ```
 
-这些 API 不依赖 matplotlib，也不把框架写死为 TA / 2DES。除
-`SingleRunPlan.execute()`、`TASingleDelayPlan.execute_pair()` 和
-`ta_recipe_v2.TADelayScanPlan.execute()` 这些显式执行入口会调用
-`run_case` 外，其余 helper 主要负责构造 field、组织 case、验证 axis
-或打包结果。
+`target_phase_vector` 直接表示 physical phase-order vector `m`。未来 public API
+不应再把 configurable `sign` 当作 phase-order semantics 的组成部分。
 
-`FieldPhyRoot` 仍是通用抽象接口；`CarrierEnvelopeField` 是当前
-phase-aware workflow 的首个正式支持 backend。它提供：
+> **Current mismatch:** 当前 implementation 的 projection helpers/specs 默认仍为
+> `sign=-1`。这将在 Milestone 1 迁移；在迁移完成前，不能根据本文档假定 runtime
+> 已使用 `+i` convention。
+
+## PhaseGrid 的数学边界
+
+目标 `PhaseGrid` 支持：
+
+- 任意 phase-dimension 数量 `D`；
+- 每个维度不同的 `N_j`；
+- 一个 `N` 应用于全部 dimensions 的 convenience input；
+- 标准 uniform grids；
+- 用户显式给定的 finite phase values。
+
+“API 接受任意 phase values”不等于“equal-weight DFT 对任意 nonuniform samples
+都是正确的 Fourier inversion”。当前及目标中的简单平均 projection 对标准完整
+uniform grid 有明确离散正交性；对任意 nonuniform/不完整采样，通常需要 least
+squares、quadrature weights 或其他 inversion 方法。未来 API 必须标明所采用的
+数学假设，不能把输入 validation 误写成一般 nonuniform reconstruction 保证。
+
+## Target Workflow
+
+```mermaid
+flowchart TD
+    A[Upper-level script] --> B[System plus Recipe plus SolverParams]
+    A --> A1[Optional SystemScanAxis]
+    A1 --> B
+    B --> C[Recipe-defined simulations]
+    C --> D[PulseSequence]
+    D --> E[SingleRunPlan]
+    E --> F[Solver]
+    F --> G[SimRes / DynamicsResult]
+    G --> H[Polarization]
+    H --> I[ReadoutPlan]
+    I --> J[ReadoutResult]
+    J --> K[Recipe postprocess]
+    K --> L[S with recipe, phase, and payload axes]
+    L --> M[Generic phase projection]
+    M --> N[Projected phase-order data]
+    N --> O[UFANSYS or user analysis]
+```
+
+Recipe 可以直接由 script/module 定义。不要为了图中的逻辑节点创建
+`ConditionPlan`、`RecipeCase`、`DelayAxis` 或 `PostprocessPlan` runtime classes。
+
+## Layer Responsibility Table
+
+| Layer | Owns | Does not own |
+| --- | --- | --- |
+| System | matter Hamiltonian、dipoles、initial state、relaxation、dephasing、system makers/adapters | Recipe、phase cycling、SystemScan orchestration |
+| Field | carrier、envelope、amplitude、physical phase、field center 和 physical perturbation evaluation | pump/probe/LO experiment role、TA delay semantics |
+| PulseSequence | experiment pulse composition、shared phase grouping、concrete pulse centers/phases 到 physical fields 的映射 | TA delay convention、Fourier targets、detector physics |
+| Execution | one-run dynamics execution、solver invocation、checkpoint infrastructure、SimRes | detector/readout physics、Recipe postprocess、phase projection |
+| Readout | target `ReadoutPlan`、polarization-to-detector transform、coherent detector physics、`ReadoutResult` | experimental condition subtraction、phase projection |
+| Recipe | cases、Conditions、recipe coordinates、delay convention、选择/生成 ReadoutPlan、postprocess、requested target phase orders | SystemScanAxis、generic Fourier projection、solver internals |
+| Generic phase projection | `PhaseGrid`、target phase orders、mathematical projection、future multi-target projection、minimal projection metadata | solver、readout、conditions、TA subtraction、Recipe reuse/broadcast |
+| Upper-level scripts | SystemScanAxis、factorial system scans、对多个 Systems 重复 Recipe execution | Recipe 内部 coordinate semantics |
+| UFANSYS / user analysis | FFT、plotting、alignment、selection、slicing、下游 spectroscopy analysis | solver/readout/Recipe execution orchestration |
+
+## Readout Architecture
+
+目标数据流是：
 
 ```text
-positive_frequency_E_MV_per_cm(t_fs)
-with_phase(phase_rad)
-phase_shifted(delta_phase_rad)
+SimRes -> polarization P -> ReadoutPlan.execute(P) -> ReadoutResult I
 ```
 
-`with_phase(phase_rad)` 使用 absolute phase 语义，返回新的 field 对象。
-正频复场满足：
+`ReadoutPlan` 是真正 callable 的 generic abstraction，而不是 `ReadoutSpec` 的
+简单 rename。它至少配置 readout field、frequency/transform settings、window、
+detector mode 和 detector parameters。第一版允许：
+
+1. 引用 `PulseSequence` 中已经进入 Hamiltonian 的 named interaction field；
+2. 直接持有一个不进入 Hamiltonian 的 external `FieldPhyRoot` 作为 guiding/LO。
+
+当前 scope 中 readout/guiding field 不参与 phase cycling；暂不设计 phase-cycled LO。
+
+Readout behavior 至少应能够表达 full detector 与 weak-signal approximation：
 
 ```text
-E_positive(t; phi) = exp(i * phi) * E_positive(t; 0)
+I_det(omega) = |E_readout(omega)|^2
+             + 2 Re[E_readout*(omega) E_sig(omega)]
+             + |E_sig(omega)|^2
+
+E_sig proportional to i * omega * P_sig
 ```
 
-real lab-frame field 由 shifted positive-frequency field 取实部得到：
+忽略相应高阶项属于 weak-signal readout approximation，不属于 phase cycling。
+
+当前 `absorption` readout 实际计算：
 
 ```text
-E_real(t) = 2 * Re[E_positive(t)]
+absorption = omega * Im[P(omega) / E(omega)]
 ```
 
-`PulseSpec.shifted(...)` 在 backend 支持 `with_phase` 时会真实应用
-phase override，并在 metadata 中记录：
+它是 susceptibility/absorption-like quantity，不是 full detector intensity。目标 public
+术语倾向 `absorption_like_response`，最终 runtime rename 留给后续 milestone 决定。
+
+## Recipe、Condition 与 postprocess
+
+Recipe 对一个给定 System 定义：
+
+- 哪些 simulation/acquisition cases 必须执行；
+- 每个 Condition 使用哪个 `PulseSequenceSpec`；
+- recipe coordinates 如何映射为 concrete pulse centers；
+- 选择或生成哪个 `ReadoutPlan`；
+- 如何把 `ReadoutResult` 合成为 `S(...)`；
+- 请求哪些 target phase-order vectors。
+
+Condition 始终表示相同 System 下不同 acquisition configuration。PB、EIS、EID、
+Hamiltonian、relaxation/dephasing、temperature、model member 或 disorder realization
+的改变会产生不同 System，不是 Condition。
+
+TA recipe 可利用自己知道的依赖关系避免重复昂贵模拟：
 
 ```text
-phase_rad
-base_phase_rad
-phase_tag
-phase_override_applied
-phase_override_note
+I_on(T, phi_pump, phi_probe)
+I_off(phi_probe)
+
+S(T, phi_pump, phi_probe, omega)
+  = [I_on(T, phi_pump, phi_probe, omega) - I_off(phi_probe, omega)]
+    / I_off(phi_probe, omega)
 ```
 
-对不支持正式 phase API 的自定义 field，默认 strict 行为会拒绝非零
-phase override，避免 phase-cycling workflow 中不同 phase run 的真实
-waveform 完全相同却被误认为已经投影。
+`I_off` 不依赖 `T` 和 `phi_pump`，所以只执行必要 cases，再由
+`Recipe.postprocess` broadcast。`I_off` 是 `deltaT/T` 定义中的 denominator；
+`|E_readout|^2` 只可能在 weak-signal 推导中作为近似出现。
 
-## Milestone 3：generic SingleRunPlan / ReadoutSpec
+delay convention 同样属于 Recipe。PulseSequence 只接收 concrete centers，不知道
+“TA positive delay”的含义。当前 TA 可以使用 `probe_center=0`、`pump_center=-T`；
+其他 Recipe 可以采用不同 origin，只要明确 coordinate-to-center mapping。
 
-当前 `single_run.py` 提供一个实验无关的 single-run 执行层：
+## S 与 Named Axes Contract
+
+`S(phi_1,...,phi_D; other coordinates)` 是 Recipe postprocess 后、phase projection
+前的正式接口。它可以是 scalar、real/complex ndarray、`S(omega)`、`S(T,omega)`
+或任意高维 observable；generic projection 不解释其物理含义。
+
+最低数据 contract 是：
 
 ```text
-SingleRunFieldPlan
--> build concrete FieldPhySeries
--> replace(base_params, field=field)
--> run_case
--> optional generic readout
--> SingleRunResult
+data: ndarray
+axis_names: tuple[str, ...]
+axis_values: mapping[str, ndarray]
+
+len(axis_names) == data.ndim
+len(axis_values[name]) == data.shape[axis_names.index(name)]
 ```
 
-`SingleRunPlan` 只替换 `NLevelPhysicalParams.field` 以及用户记录用的
-`input_description / input_metadata`。它不改变 matter system、time grid、
-solver mode、relaxation、pure dephasing、normalization 或 solver 行为。
-
-`input_metadata["single_run_workflow"]` 记录本次 single-run 的
-`case_name`、`field_plan`、`readout`、`phase_vector` 和 `centers_fs`，
-用于后续 recipe / cycler 追踪一次具体 field configuration。
-
-`ReadoutSpec` 当前支持三种模式：
-
-- `mode="none"`：不执行 readout，`SingleRunResult.readout` 为 `None`；
-- `mode="polarization"`：计算宏观 `polarization_C_per_m2(t)`；
-- `mode="absorption"`：计算 polarization，并使用指定 readout field 作为
-  denominator 调用 `lab_frame_absorption_response`。
-
-`readout_field_name=None` 表示使用 total field；非空字符串表示从
-`FieldPhySeries` 中按名称选择 subfield，例如未来 TA recipe 可以选择
-`readout_field_name="probe"`。generic single-run 层不把 `"probe"` 作为
-默认值，也不假设 probe-only / pump-probe reference 存在。
-
-当前 absorption-like readout 只输出通用谱响应：
-
-```text
-polarization_C_per_m2
-readout_field_MV_per_cm
-lab_frame_absorption_response(...)
-```
-
-它不计算：
-
-- `S_TA = S_pump_probe - S_probe_only`；
-- phase average；
-- phase grid；
-- Fourier projection；
-- 2DES spectrum。
-
-这些操作属于后续 Layer 2 / Layer 3。
-
-## Milestone 4：generic PhaseCyclingPlan / Fourier projection
-
-当前 `phase_cycling.py` 提供一个实验无关的 phase-grid runner：
-
-```text
-PhaseGrid
--> phase vectors
--> clone SingleRunPlan per phase case
--> SingleRunPlan.execute()
--> extract selected readout array
--> stack phase_cases x ...
--> Fourier projection by target_phase_vector
--> PhaseCyclingResult
-```
-
-`PhaseGrid` 只表达 phase tags 到 phase samples 的笛卡尔积。`PhaseCyclingPlan`
-只重复调用 `SingleRunPlan`，并通过 `PhaseProjectionSpec.quantity` 指定要
-投影的 readout array，例如：
-
-```text
-readout.polarization_C_per_m2
-readout.readout_field_MV_per_cm
-readout.spectrum.absorption
-```
-
-Fourier projection 的默认约定为：
-
-```text
-weight = exp(-i * sum_k target_phase_vector[k] * phase_vector[k])
-```
-
-`target_phase_vector` 是 phase-channel 控制入口。它的系数必须是整数；
-例如 `{"probe": 1}` 表示提取随 probe phase 带 `exp(+i phi_probe)` 的
-分量。projection 保留 complex 结果，不强制取实部。
-
-`PhaseCyclingPlan` 当前不保存文件，也不自动生成 checkpoint path。若
-`base_plan.checkpoint.enabled=True`，当前实现直接拒绝，以避免多个 phase
-case 默认覆盖或误读同一个 checkpoint。
-
-generic phase cycler 当前不计算：
-
-- `S_TA = S_pump_probe - S_probe_only`；
-- pump-probe / probe-only orchestration；
-- delay-energy map；
-- 2DES rephasing / non-rephasing / double-quantum recipe；
-- `t1/t2/t3` grid；
-- 2D Fourier transform。
-
-这些操作属于后续 Layer 3 recipe。未来 TA recipe 负责 delay scan、
-probe-only reference 和 pump-probe difference；未来 2DES recipe 负责
-`t1/t2/t3` grid 和二维 FFT。
-
-## Milestone 4.5：projected-result bundle 与 axis metadata
-
-`PhaseCyclingResult` 负责保存 phase-cycling runner 的核心结果：
-
-- 每个 phase case 的 values；
-- Fourier-projected signal；
-- phase vectors；
-- target phase vector；
-- projection metadata；
-- phase grid metadata。
-
-recipe 输出通常还需要把 projected signal 与非投影 axis metadata 配对。
-例如 absorption-like projection 后，常见 bundle 是：
-
-```text
-projected_signal = projected absorption
-axes["energy_eV"] = energy_eV
-axes["omega_fs_inv"] = omega_fs_inv
-```
-
-或 polarization projection 后：
-
-```text
-projected_signal = projected polarization_C_per_m2
-axes["time_fs"] = time_fs
-```
-
-`ProjectedReadoutBundle` 用于保存这种通用配对结果：
-
-```text
-signal_name
-signal_quantity
-projected_signal
-axes
-phase_result_summary
-metadata
-```
-
-`AxisMetadataSpec` 描述 axis metadata 从哪里来：
-
-- `source="first_case"`：只从第一个 phase case 提取 axis；
-- `source="validate_all_cases"`：从所有 phase cases 提取 axis，并用
-  `np.allclose` 验证一致。
-
-`validate_all_cases` 适合 `energy_eV`、`omega_fs_inv` 这类每个 phase case
-都应相同的频率轴。若不同 phase case 的 axis shape 或数值不一致，会直接
-报错，避免把不匹配的频率轴和 projected signal 绑定在一起。
-
-axis metadata 不做 Fourier projection。`target_phase_vector` 只作用于
-`PhaseProjectionSpec.quantity` 指定的 signal quantity。recipe 层决定哪些
-axes 应与 projected signal 配对；TA / 2DES 的物理约定仍由各自 recipe
-固定。
-
-当前 bundle helper 仍不实现：
-
-- TA subtraction；
-- delay scan；
-- probe-only / pump-probe orchestration；
-- 2DES `t1/t2/t3` grid；
-- 2D Fourier transform；
-- explicit LO/readout phase recipe；
-- phase-case checkpoint path builder。
-
-## Milestone 5.1：TA recipe v2 minimal single-delay scaffold
-
-当前 `ta_recipe_v2.py` 提供一个最小 TA recipe v2 外壳，用 Layer 3 的
-TA 语义组织已有 generic 层：
-
-```text
-pump PulseSpec
-probe PulseSpec
-single delay centers
--> pump-probe SingleRunPlan
--> probe-only SingleRunPlan
--> probe-channel absorption-like readout bundle
-```
-
-最小 TA 物理语义：
-
-- physical pulses: pump pulse 与 probe pulse；
-- delay 定义：`delay_fs = probe_center_fs - pump_center_fs`；
-- 正 delay 表示 pump before probe；
-- readout / detection：probe-channel absorption-like readout；
-- `ReadoutSpec(mode="absorption", readout_field_name=probe.name)`；
-- reference cases：pump-probe response 与 probe-only response；
-- 后续 TA signal 约定：
-
-```text
-S_TA(omega, delay) = S_pump_probe(omega, delay) - S_probe_only(omega)
-```
-
-当前 readout 不是第三个激发脉冲。probe 既是 physical probe pulse，也是
-readout field reference。最小 TA recipe 不引入 independent LO phase tag；
-如果后续显式建模 heterodyne observable，再在 recipe 层定义 LO / readout
-phase 约定。
-
-`TASingleDelayPlan` 当前只生成两条 `SingleRunPlan`：
-
-- `make_pump_probe_plan()`：sequence 包含 pump 和 probe；
-- `make_probe_only_plan()`：sequence 只包含 probe。
-
-`extract_ta_absorption_bundle(...)` 从 `SingleRunResult.readout.spectrum`
-提取：
-
-- `absorption`；
-- `energy_eV`；
-- 可选 `omega_fs_inv`。
-
-它只打包单条 response，不做 subtraction、不做 phase projection。
-
-`TASingleDelayPlan` 与 `extract_ta_absorption_bundle(...)` 本身不做
-subtraction；subtraction 由 Milestone 5.2 的 `compute_ta_contrast(...)`
-显式完成。
-
-当前单 delay scaffold 本身不实现：
-
-- phase-cycling TA；
-- TAResultIO v2；
-- old demo migration。
-
-## Milestone 5.2：TA subtraction 与 energy-axis alignment
-
-当前 `ta_recipe_v2.py` 已支持单 delay TA contrast：
-
-```text
-TASingleDelayPlan
--> execute_pair()
--> pump-probe SingleRunPlan.execute()
--> probe-only SingleRunPlan.execute()
--> extract_ta_absorption_bundle()
--> compute_ta_contrast()
--> TAContrastResult
-```
-
-subtraction convention 固定为：
-
-```text
-S_TA(omega, delay) = S_pump_probe(omega, delay) - S_probe_only(omega)
-```
-
-当前不做 sign flip，不做 OD / delta OD 转换，不做 relative difference，不做
-normalization variants。
-
-`TASubtractionSpec` 只控制：
-
-- output signal name；
-- energy / omega axis validation tolerance；
-- 是否验证 `omega_fs_inv` axis。
-
-axis policy：
-
-- `absorption` shape 必须一致；
-- `energy_eV` shape 必须一致，且 `np.allclose`；
-- 如果 `validate_omega_axis=True`，两边 `omega_fs_inv` 要么都不存在，要么
-  shape 一致且 `np.allclose`；
-- 如果 `validate_omega_axis=False`，不验证 omega axis，并优先沿用
-  pump-probe bundle 的 `omega_fs_inv`；
-- 当前不插值、不重采样、不平滑、不静默截断。
-
-`TAContrastResult` 保存单 delay 的：
-
-- `delta_absorption`；
-- `energy_eV`；
-- 可选 `omega_fs_inv`；
-- subtraction spec summary；
-- source case names；
-- axis validation metadata。
-
-当前 Milestone 5.2 的单 delay subtraction 本身不实现：
-
-- phase-cycling TA；
-- TAResultIO v2；
-- old demo migration。
-
-## Milestone 5.3：TA delay scan scaffold
-
-当前 `ta_recipe_v2.py` 已支持最小 TA delay scan scaffold：
-
-```text
-TADelayScanPlan
--> make_single_delay_plans()
--> 每个 delay 执行 TASingleDelayPlan.execute_pair()
--> TASingleDelayPairResult.compute_contrast()
--> build_ta_delay_scan_map()
--> TADelayScanResult
-```
-
-当前支持范围：
-
-- 单 delay pump-probe / probe-only 编排；
-- 单 delay `S_TA = S_pump_probe - S_probe_only` contrast；
-- 多 delay scaffold；
-- 将多个单 delay contrast 堆叠为 delay × energy map；
-- fake executor 测试入口，用于不触发 solver 的 scan 级验证。
-
-delay / axis policy：
-
-- delay 轴严格保留输入顺序；
-- 不按 delay 数值排序；
-- 每个 delay 的 `energy_eV` shape 必须一致；
-- 每个 delay 的 `energy_eV` 数值必须 `np.allclose`；
-- 默认要求每个 delay 的 `omega_fs_inv` 要么都存在且一致，要么都不存在；
-- 如果 `validate_omega_axis=False`，不验证 omega 轴，并沿用第一个
-  contrast 的 `omega_fs_inv`；
-- 当前不做 interpolation、resampling、smoothing、截断或自动修轴。
-
-`TADelayScanMap` 保存：
-
-- `delays_fs`；
-- `energy_eV`；
-- `delta_absorption`，shape 为 `n_delay × n_energy`；
-- 可选 `omega_fs_inv`；
-- source contrast case names；
-- axis validation metadata。
-
-`TADelayScanPlan` 仍拒绝 `checkpoint.enabled=True`，避免多个 delay case
-默认复用同一个 checkpoint 路径导致覆盖或误读。当前 scaffold 不保存大输出。
-
-当前 Milestone 5.3 仍不实现：
-
-- phase-cycling TA；
-- TAResultIO v2；
-- old demo migration；
-- plotting；
-- npz / csv export；
-- interpolation / resampling；
-- OD / delta OD / relative difference / normalization variants。
-
-## Milestone 5.4：optional pump-probe phase-cycling scaffold
-
-当前 `ta_recipe_v2.py` 已支持可选 pump-probe phase-cycling scaffold：
-
-```text
-TASingleDelayPlan
--> make_pump_probe_plan()
--> build_ta_pump_probe_phase_cycling_plan()
--> PhaseCyclingPlan.execute(...)
--> build_ta_phase_cycled_pump_probe_bundle()
--> ProjectedReadoutBundle
-```
-
-当前支持范围：
-
-- 使用 `TAPhaseCyclingSpec` 显式描述 phase grid、target phase vector、
-  projection quantity、projection sign 和 axis metadata；
-- 只对 pump-probe readout quantity 做 Fourier projection；
-- target phase vector 必须由用户或上层 recipe 显式传入；
-- 支持把 `PhaseCyclingResult` 打包为 pump-probe projected readout bundle；
-- 支持 fake executor 测试，不要求默认运行真实 multi-phase solver。
-
-The optional TA phase-cycling scaffold projects the pump-probe readout quantity
-using an explicitly supplied `target_phase_vector`. It does not define a
-universal TA phase convention. A population-like example may use pump net phase
-0 and probe +1, but this remains recipe-level convention, not a bottom-level
-rule.
-
-语义边界：
-
-- no universal TA phase target is hard-coded；
-- `target_phase_vector` 属于 recipe / cycler 层，不属于 `run_case`；
-- `target_phase_vector` 不属于 `DynamicsResult`；
-- readout 不是第三个激发脉冲；
-- 在当前 minimal TA recipe 中，probe 既是 physical probe pulse，也是
-  readout field reference；
-- 本轮不引入 independent LO / readout phase tag；
-- 如果后续显式建模 heterodyne observable，再由 recipe 层定义 LO /
-  readout phase convention。
-
-当前 Milestone 5.4 仍不实现：
-
-- phase-cycled pump-probe minus probe-only subtraction；
-- probe-only phase projection；
-- delay-scan phase cycling；
-- TAResultIO v2；
-- old demo migration；
-- explicit LO/readout phase convention；
-- OD / delta OD / relative difference / normalization variants；
-- interpolation / resampling / smoothing / sign flip。
-
-Phase-cycled TA contrast 保留给后续 recipe-level decision；需要先固定 TA
-phase convention，再决定 probe-only reference 是否参与 projection，以及
-如何与 pump-probe projected signal 相减。
-
-## Migration plan
-
-### Milestone 1：已完成
-
-- 架构文档；
-- generic multi-pulse / pulse-sequence single-run scaffold；
-- tests / smoke；
-- 标注 `qudpy_sjh/experiments/ta/` 是未接入的 TA recipe v1 prototype；
-- 不改变现有 TA 行为；
-- phase cycling 只做文档设计，不实现完整 runner。
-
-### Milestone 2：已完成
-
-- 为 `CarrierEnvelopeField` 实现 `with_phase` / `phase_shifted` API；
-- `FieldPhyRoot` 保持通用抽象，不把框架写死为只支持
-  `CarrierEnvelopeField`；
-- `PulseSpec.shifted(...)` 显式接入 `CarrierEnvelopeField` 作为当前首个
-  phase-aware backend；
-- 支持任意 pulse sequence 生成带真实 phase override 的 `FieldPhySeries`；
-- 没有改变 solver。
-
-### Milestone 3：已完成低风险 generic single-run plan 与 readout
-
-- 已实现 generic `SingleRunPlan / ReadoutSpec`；
-- 已标准化一次 concrete field propagation + 可选 readout；
-- 已支持 no readout、polarization readout、absorption-like spectral readout；
-- 已保留 `readout_field_name` 接口，供后续 TA / 2DES recipe 指定 total
-  field 或 named subfield；
-- 未实现 phase grid、Fourier projection、TA subtraction 或 2DES readout。
-
-### Milestone 4：已完成低风险 generic PhaseCycler runner
-
-- 已实现 `PhaseGrid / PhaseCyclingPlan / PhaseCyclingResult`；
-- 已实现 `normalize_target_phase_vector`、`phase_projection_weight` 和
-  `fourier_project_phase_cases`；
-- 已支持从 `SingleRunResult.readout` 中提取指定 array 并投影；
-- 已支持 fake executor 测试，不要求默认运行多次 solver；
-- checkpoint enabled 时有明确 guard；
-- 未实现 TA subtraction、TA recipe v2、2DES recipe 或 phase-case
-  checkpoint path builder。
-
-### Milestone 4.5：已完成低风险 projected-result bundle
-
-- 已实现 `AxisMetadataSpec`；
-- 已实现 `ProjectedReadoutBundle`；
-- 已实现 `build_projected_readout_bundle`；
-- 已支持从 first case 提取 axis metadata；
-- 已支持从 all cases 提取并验证 axis metadata；
-- 已支持 `readout.time_fs` quantity；
-- axis metadata 不做 Fourier projection；
-- 未实现 TA subtraction、delay scan 或 2DES FFT。
-
-### Milestone 5.1：已完成低风险 TA recipe v2 minimal scaffold
-
-- 已实现 `TADelayCenters`；
-- 已实现 `TAReadoutBundle`；
-- 已实现 `TASingleDelayPlan`；
-- 已实现 `TASingleDelayPairResult`；
-- 已实现 `extract_ta_absorption_bundle`；
-- 已支持生成单 delay 的 pump-probe `SingleRunPlan`；
-- 已支持生成单 delay 的 probe-only `SingleRunPlan`；
-- 默认 readout 是 probe-channel absorption-like readout；
-- 此阶段未实现 TA subtraction、delay scan、phase-cycling TA 或 TAResultIO v2。
-
-### Milestone 5.2：已完成低风险 TA subtraction 与 energy-axis alignment
-
-- 已实现 `TASubtractionSpec`；
-- 已实现 `TAContrastResult`；
-- 已实现 `validate_ta_readout_bundle_axes`；
-- 已实现 `compute_ta_contrast`；
-- 已支持 `TASingleDelayPairResult.compute_contrast()`；
-- 已固定 `S_TA = S_pump_probe - S_probe_only`；
-- 已验证 pump-probe / probe-only 的 energy axis 对齐；
-- 已新增单 delay TA execute smoke；
-- 此阶段未实现 delay scan、phase-cycling TA、TAResultIO v2、OD/relative
-  difference、interpolation 或 resampling。
-
-### Milestone 5.3：已完成低风险 TA delay scan scaffold
-
-- 已实现 `TADelayScanMap`；
-- 已实现 `validate_ta_contrast_axes_for_scan`；
-- 已实现 `build_ta_delay_scan_map`；
-- 已实现 `TADelayScanPlan`；
-- 已实现 `TADelayScanResult`；
-- 已支持对多个 delay 生成 `TASingleDelayPlan`；
-- 已支持收集 delay-energy map；
-- delay 输入顺序保留，不排序；
-- 所有 delay 的 energy axis 必须对齐；
-- checkpoint enabled 时有明确 guard；
-- 已支持 fake executor 测试，不要求默认运行真实 multi-delay solver scan；
-- 不改变 single-run / solver 行为；
-- 未实现 phase-cycling TA、TAResultIO v2、绘图、npz/csv export、旧 demo
-  迁移、OD/ΔOD variants、interpolation 或 resampling。
-
-### Milestone 5.4：已完成低风险 optional pump-probe phase-cycling scaffold
-
-- 已实现 `TAPhaseCyclingSpec`；
-- 已实现 `TAPhaseCycledPumpProbeResult`；
-- 已实现 `build_ta_pump_probe_phase_cycling_plan`；
-- 已实现 `build_ta_phase_cycled_pump_probe_bundle`；
-- 已支持从 `TASingleDelayPlan` 构造 pump-probe `PhaseCyclingPlan`；
-- `target_phase_vector` 必须显式传入；
-- 不硬编码 TA phase target vector；
-- 不把 phase cycling 设为默认流程；
-- 当前只 project pump-probe readout；
-- 未实现 phase-cycled TA subtraction、probe-only phase projection、
-  delay-scan phase cycling、TAResultIO v2 或 old demo migration。
-
-### Milestone 5.5：decide TA phase-cycled contrast convention
-
-- 固定或继续推迟 TA phase-cycled contrast convention；
-- 决定 probe-only reference 是否参与 phase projection；
-- 明确 pump-probe projected signal 与 reference 的 subtraction 规则。
-
-### Milestone 5.6：TAResultIO v2
-
-- 新增 TA recipe v2 的保存格式；
-- 支持 single-delay contrast、delay scan map 与 optional projected bundle；
-- 不复用 legacy v1 IO 的含义作为隐式默认。
-
-### Milestone 5.7：old demo migration
-
-- 复现旧 demo 的关键输出；
-- 明确 `phase_stack`、`phase_avg`、`phase_rms`、selected-delay spectra、
-  selected-energy kinetics 的 v2 对应关系。
-
-### Milestone 6：新增 2DES recipe
-
-- pulse1/pulse2/pulse3/readout；
-- rephasing / non-rephasing / double-quantum target vectors；
-- `t1/t2/t3` grid；
-- 2D Fourier transform 和 2D spectra output。
+phase axes、recipe-coordinate axes 和 payload axes 都必须在 `axis_names` 中有明确
+位置。projection 移除被投影的 phase axes，并保留剩余 axis names/values。
+不引入 xarray，也不预先设计 heavy named-array hierarchy。
+
+一份 `S(phi)` 必须原生支持多个 targets：昂贵的 solver、readout 和 Recipe
+postprocess 各执行一次，只重复廉价 Fourier projection。
+
+## Persistence
+
+一次 Recipe execution 应保存：
+
+1. 所有昂贵 `SimRes`；
+2. final projected data；
+3. recipe/execution metadata。
+
+中间 `S(phi)` 不要求默认持久化，因为它可以从保存的 `SimRes` 经 readout 和
+Recipe postprocess 重建。projected output 至少保存：
+
+- target phase-order vector(s)；
+- phase convention 及 convention/schema version；
+- normalization；
+- phase-grid definition；
+- remaining `axis_names` 与 `axis_values`；
+- 必要 provenance。
+
+不要为了 persistence 建立大型 result hierarchy。
+
+## Current Abstraction Status
+
+| Current abstraction | Target status | Reason |
+| --- | --- | --- |
+| `PhaseGrid` | keep | 有独立 phase-domain semantics 与 validation |
+| heavy `PhaseCyclingPlan` | target-to-remove | 不应执行 case generation、solver、readout、postprocess 或 aggregation |
+| `PhaseProjectionSpec` | target-to-remove | plain projection function 可直接接受 data/axes/grid/targets/normalization |
+| `PhaseCaseRecord` | move/remove from projection layer | execution provenance 属于 Recipe/execution manifest |
+| heavy `PhaseCyclingResult` | simplify/remove if unnecessary | projected ndarray(s) 加最小 metadata 即可 |
+| `AxisMetadataSpec` | candidate for simplification/removal | 当前与 ndarray dimension 绑定不足且依赖 SingleRun quantity extraction |
+| `ProjectedReadoutBundle` | target-to-remove | projection 输入是 recipe observable，不一定是 readout |
+| `TAPhaseCyclingSpec` | split into Recipe inputs | targets 属于 Recipe；projection math 属于 generic layer |
+| `TAPhaseCycledPumpProbeResult` | target-to-remove | projected data 应保持 experiment-generic |
+| TA projected-bundle builders | target-to-remove | 不再需要 readout-specific projection wrapper |
+| `ReadoutSpec` | redesign later | 目标是 behavioral `ReadoutPlan`，不是简单 rename |
+| `SingleRunReadoutResult` | redesign later | 目标为独立 `ReadoutResult` |
+| `SingleRunFieldPlan` | defer | 是否仍需单独存在要在 execution/readout 重构后评估 |
+| `independent_phase` | defer | 可能形成 phase-independence 双 source of truth |
+| System adapter initial-state/dephasing mapping | defer/separate issue | 问题真实但与 PC/Readout/Recipe 重构正交 |
+
+Milestone 0 不删除、rename 或改变以上任何 runtime object。
+
+## Planned Migration Boundaries
+
+- **Milestone 1:** 迁移 Fourier implementation 到固定 `+i` convention，增加
+  convention/version metadata 与 synthetic harmonic tests。
+- **Later readout milestone:** 从 `SingleRunPlan` 抽取 behavioral `ReadoutPlan`，
+  支持 interaction-field reference、external field、full/weak detector modes。
+- **Later recipe milestone:** 先 readout，再 `Recipe.postprocess`，最后 generic
+  multi-target phase projection；实现昂贵 cases 的 reuse/broadcast。
+- **Later cleanup milestone:** 数值/物理验证和 example/test migration 后，才标记
+  heavy runner、bundle 和 TA projected wrappers deprecated，随后删除。
+- **Separate system milestone:** 修复 `NLevelSystem.initial_state` 与 transition
+  dephasing 到 solver execution 的完整映射。
+
+## Explicit Non-goals
+
+当前架构不要求：
+
+- generic `ConditionPlan`、`RecipeCase`、`DelayAxis` 或 `PostprocessPlan`；
+- xarray 或 heavy named-array class；
+- phase-cycled readout/LO field；
+- 把 SystemScanAxis 放入 Recipe；
+- 在 generic phase projection 中执行 solver、readout、subtraction 或 TA logic；
+- 在本次 terminology freeze 中修改任何 runtime behavior。

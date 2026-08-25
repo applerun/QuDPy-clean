@@ -5,7 +5,7 @@
 当前主线是：
 
 ```text
-FieldPhyRoot / FieldPhySeries / TAField / TwoDESField
+FieldPhyRoot / CarrierEnvelopeField / FieldPhySeries
 -> NLevelPhysicalParams
 -> ParaNormalizer
 -> NLevelSolverParams
