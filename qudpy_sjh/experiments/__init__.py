@@ -2,6 +2,9 @@
 
 from .pulse_sequence import (
     AxisMetadataSpec,
+    PHASE_PROJECTION_CONVENTION,
+    PHASE_PROJECTION_CONVENTION_VERSION,
+    TARGET_PHASE_VECTOR_SEMANTICS,
     FieldGroupSpec,
     PhaseCaseRecord,
     PhaseCyclingPlan,
@@ -25,6 +28,7 @@ from .pulse_sequence import (
     is_supported_phase_backend,
     normalize_phase_vector,
     normalize_target_phase_vector,
+    phase_projection_convention_metadata,
     phase_projection_weight,
     supports_phase_override,
     validate_phase_tag,
@@ -33,6 +37,9 @@ from .pulse_sequence import (
 
 __all__ = [
     "AxisMetadataSpec",
+    "PHASE_PROJECTION_CONVENTION",
+    "PHASE_PROJECTION_CONVENTION_VERSION",
+    "TARGET_PHASE_VECTOR_SEMANTICS",
     "FieldGroupSpec",
     "PhaseCaseRecord",
     "PhaseCyclingPlan",
@@ -56,6 +63,7 @@ __all__ = [
     "is_supported_phase_backend",
     "normalize_phase_vector",
     "normalize_target_phase_vector",
+    "phase_projection_convention_metadata",
     "phase_projection_weight",
     "supports_phase_override",
     "validate_phase_tag",

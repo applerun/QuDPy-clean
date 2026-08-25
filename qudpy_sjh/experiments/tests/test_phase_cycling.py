@@ -7,6 +7,9 @@ import numpy as np
 
 from qudpy_sjh.experiments.pulse_sequence import (
     AxisMetadataSpec,
+    PHASE_PROJECTION_CONVENTION,
+    PHASE_PROJECTION_CONVENTION_VERSION,
+    TARGET_PHASE_VECTOR_SEMANTICS,
     PhaseCaseRecord,
     PhaseCyclingPlan,
     PhaseCyclingResult,
@@ -159,55 +162,119 @@ class PhaseGridTests(unittest.TestCase):
 class PhaseMathTests(unittest.TestCase):
     def test_phase_projection_weight_single_tag(self):
         phi = 0.37
-        weight = phase_projection_weight({"probe": phi}, {"probe": 1}, sign=-1)
+        weight = phase_projection_weight({"probe": phi}, {"probe": 1})
 
-        self.assertAlmostEqual(weight, np.exp(-1j * phi))
+        self.assertAlmostEqual(weight, np.exp(1j * phi))
         with self.assertRaises(ValueError):
             phase_projection_weight({}, {"probe": 1})
         with self.assertRaises(ValueError):
             phase_projection_weight({"probe": phi}, {"probe": 1}, sign=0)
+        with self.assertRaises(ValueError):
+            phase_projection_weight({"probe": phi}, {"probe": 1}, sign=1.2)
 
-    def test_fourier_project_single_tag(self):
-        phases = [0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi]
+    def test_fourier_project_1d_physical_orders(self):
+        phases = [2.0 * math.pi * index / 8 for index in range(8)]
         phase_vectors = [{"probe": phase} for phase in phases]
-        signal = np.asarray([np.exp(1j * phase) for phase in phases])
 
-        projected = fourier_project_phase_cases(signal, phase_vectors, {"probe": 1}, sign=-1)
-        rejected = fourier_project_phase_cases(signal, phase_vectors, {"probe": 0}, sign=-1)
+        for order in (0, 1, -1, 2):
+            with self.subTest(order=order):
+                signal = np.asarray([np.exp(-1j * order * phase) for phase in phases])
+                projected = fourier_project_phase_cases(signal, phase_vectors, {"probe": order})
+                rejected = fourier_project_phase_cases(signal, phase_vectors, {"probe": order + 1})
 
-        self.assertAlmostEqual(projected, 1.0 + 0.0j)
-        self.assertAlmostEqual(rejected, 0.0 + 0.0j)
+                self.assertAlmostEqual(projected, 1.0 + 0.0j)
+                self.assertAlmostEqual(rejected, 0.0 + 0.0j)
 
     def test_fourier_project_preserves_non_phase_shape(self):
         phases = [0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi]
         phase_vectors = [{"probe": phase} for phase in phases]
-        signal = np.asarray([np.exp(1j * phase) for phase in phases])[:, None, None]
+        signal = np.asarray([np.exp(-1j * phase) for phase in phases])[:, None, None]
         values = signal * np.ones((1, 3, 5), dtype=np.complex128)
 
-        projected = fourier_project_phase_cases(values, phase_vectors, {"probe": 1}, sign=-1)
+        projected = fourier_project_phase_cases(values, phase_vectors, {"probe": 1})
 
         self.assertEqual(projected.shape, (3, 5))
         np.testing.assert_allclose(projected, np.ones((3, 5)), rtol=1e-12, atol=1e-12)
 
-    def test_fourier_project_two_tags(self):
-        phases = [0.0, 0.5 * math.pi, math.pi, 1.5 * math.pi]
+    def test_fourier_project_two_dimensional_asymmetric_order(self):
+        phases = [2.0 * math.pi * index / 8 for index in range(8)]
         phase_vectors = [
-            {"pulse1": phase1, "pulse2": phase2}
+            {"tag1": phase1, "tag2": phase2}
             for phase1 in phases
             for phase2 in phases
         ]
         signal = np.asarray(
-            [np.exp(1j * (-item["pulse1"] + item["pulse2"])) for item in phase_vectors]
+            [np.exp(-1j * (2 * item["tag1"] - item["tag2"])) for item in phase_vectors]
         )
 
         projected = fourier_project_phase_cases(
             signal,
             phase_vectors,
-            {"pulse1": -1, "pulse2": 1},
-            sign=-1,
+            {"tag1": 2, "tag2": -1},
         )
+        rejected = fourier_project_phase_cases(signal, phase_vectors, {"tag1": 2, "tag2": 1})
 
         self.assertAlmostEqual(projected, 1.0 + 0.0j)
+        self.assertAlmostEqual(rejected, 0.0 + 0.0j)
+
+    def test_fourier_project_unequal_grid_sizes_normalizes_by_cartesian_case_count(self):
+        grid = PhaseGrid(
+            {
+                "tag1": tuple(2.0 * math.pi * index / 4 for index in range(4)),
+                "tag2": tuple(2.0 * math.pi * index / 3 for index in range(3)),
+            }
+        )
+        phase_vectors = list(grid.iter_phase_vectors())
+        signal = np.asarray(
+            [np.exp(-1j * (item["tag1"] - item["tag2"])) for item in phase_vectors]
+        )
+
+        normalized = fourier_project_phase_cases(signal, phase_vectors, {"tag1": 1, "tag2": -1})
+        unnormalized = fourier_project_phase_cases(
+            signal,
+            phase_vectors,
+            {"tag1": 1, "tag2": -1},
+            normalize=False,
+        )
+
+        self.assertEqual(len(phase_vectors), 12)
+        self.assertAlmostEqual(normalized, 1.0 + 0.0j)
+        self.assertAlmostEqual(unnormalized, 12.0 + 0.0j)
+
+    def test_uniform_grid_aliases_phase_orders_modulo_n(self):
+        n_steps = 4
+        phases = [2.0 * math.pi * index / n_steps for index in range(n_steps)]
+        phase_vectors = [{"probe": phase} for phase in phases]
+        signal = np.asarray([np.exp(-1j * phase) for phase in phases])
+
+        order_1 = fourier_project_phase_cases(signal, phase_vectors, {"probe": 1})
+        aliased_order_5 = fourier_project_phase_cases(signal, phase_vectors, {"probe": 5})
+
+        # An N-step phase cycle extracts discrete Fourier classes modulo N.
+        self.assertAlmostEqual(order_1, 1.0 + 0.0j)
+        self.assertAlmostEqual(aliased_order_5, 1.0 + 0.0j)
+
+    def test_nonuniform_explicit_phases_use_equal_weight_sum(self):
+        phases = [0.0, 0.71, 2.13]
+        phase_vectors = [{"probe": phase} for phase in phases]
+        signal = np.asarray([1.0, 2.0, 4.0], dtype=np.complex128)
+
+        projected = fourier_project_phase_cases(signal, phase_vectors, {"probe": 1})
+        expected = np.mean(signal * np.exp(1j * np.asarray(phases)))
+
+        np.testing.assert_allclose(projected, expected)
+
+    def test_projection_metadata_identifies_canonical_convention(self):
+        spec_payload = PhaseProjectionSpec(quantity="readout.spectrum.absorption").to_dict()
+        result_payload = _fake_phase_result().to_dict(include_arrays=False)
+
+        for payload in (spec_payload, result_payload):
+            self.assertEqual(payload["phase_projection_convention"], PHASE_PROJECTION_CONVENTION)
+            self.assertEqual(
+                payload["phase_projection_convention_version"],
+                PHASE_PROJECTION_CONVENTION_VERSION,
+            )
+            self.assertEqual(payload["target_phase_vector_semantics"], TARGET_PHASE_VECTOR_SEMANTICS)
 
     def test_normalize_target_phase_vector(self):
         self.assertEqual(
@@ -435,7 +502,7 @@ class PhaseCyclingPlanTests(unittest.TestCase):
             phase = case_plan.field_plan.phase_vector["probe"]
             return _fake_result(
                 case_name=case_plan.case_name,
-                polarization=np.asarray([np.exp(1j * phase)]),
+                polarization=np.asarray([np.exp(-1j * phase)]),
             )
 
         result = plan.execute(executor=fake_executor)

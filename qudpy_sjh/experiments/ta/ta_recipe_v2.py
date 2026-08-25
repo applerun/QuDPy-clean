@@ -19,8 +19,9 @@ readout 不是第三个激发脉冲；probe 既是 physical probe pulse，也是
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field as dataclass_field
+import warnings
 from collections.abc import Mapping
+from dataclasses import dataclass, field as dataclass_field
 from typing import Any
 
 import numpy as np
@@ -40,6 +41,7 @@ from qudpy_sjh.experiments.pulse_sequence import (
     SingleRunPlan,
     SingleRunResult,
     build_projected_readout_bundle,
+    phase_projection_convention_metadata,
 )
 from qudpy_sjh.experiments.pulse_sequence.pulse_sequence import validate_phase_tag, validate_pulse_name
 from qudpy_sjh.utils.core import NLevelPhysicalParams, ParaNormalizer
@@ -290,7 +292,9 @@ class TAPhaseCyclingSpec:
 
     当前 scaffold 只对 pump-probe readout quantity 做 phase projection。
     `target_phase_vector` 必须由用户或上层 recipe 显式传入；这里不定义通用
-    TA phase convention，也不默认使用任何固定 target vector。probe 在当前
+    TA phase convention，也不默认使用任何固定 target vector。
+    `target_phase_vector` 直接表示 physical phase-order vector，canonical
+    projection 使用 `exp(+i*m dot phi)`。probe 在当前
     minimal TA recipe 中仍同时是 physical probe pulse 与 readout field
     reference；readout / LO 不是第三个激发脉冲。
     """
@@ -301,7 +305,7 @@ class TAPhaseCyclingSpec:
     signal_name: str = "phase_projected_absorption"
     axis_specs: tuple[AxisMetadataSpec, ...] = dataclass_field(default_factory=_default_ta_phase_axis_specs)
     normalize: bool = True
-    sign: int = -1
+    sign: int = 1
     metadata: dict[str, Any] = dataclass_field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -327,9 +331,16 @@ class TAPhaseCyclingSpec:
         for spec in axis_specs:
             if not isinstance(spec, AxisMetadataSpec):
                 raise TypeError("axis_specs must contain only AxisMetadataSpec instances.")
-        sign = int(self.sign)
-        if sign not in {-1, 1}:
+        if self.sign not in {-1, 1}:
             raise ValueError("sign must be +1 or -1.")
+        sign = int(self.sign)
+        if sign == -1:
+            warnings.warn(
+                "TAPhaseCyclingSpec.sign=-1 is deprecated legacy behavior; "
+                "canonical target_phase_vector semantics use sign=+1.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         object.__setattr__(self, "target_phase_vector", target)
         object.__setattr__(self, "projection_quantity", projection_quantity)
         object.__setattr__(self, "signal_name", signal_name)
@@ -348,6 +359,7 @@ class TAPhaseCyclingSpec:
             "axis_specs": [spec.to_dict() for spec in self.axis_specs],
             "normalize": bool(self.normalize),
             "sign": int(self.sign),
+            **phase_projection_convention_metadata(sign=self.sign),
             "metadata": dict(self.metadata),
             "ta_phase_cycling_scope": {
                 "scope": "pump_probe_readout_projection_only",

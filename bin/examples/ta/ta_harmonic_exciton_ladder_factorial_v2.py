@@ -500,7 +500,6 @@ def run_one_case(
             AxisMetadataSpec(name="omega_fs_inv", quantity="readout.spectrum.omega_fs_inv", source="validate_all_cases"),
         ),
         normalize=True,
-        sign=-1,
         metadata={
             "meaning": "legacy pump-phase average; TA is pump-probe absorption minus probe-only absorption",
             "not_a_universal_ta_phase_convention": True,

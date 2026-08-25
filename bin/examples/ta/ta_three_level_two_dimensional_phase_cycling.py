@@ -47,7 +47,13 @@ DEFAULT_OUTPUT_DIR = (
     / "ta_three_level_two_dimensional_phase_cycling"
 )
 
-from qudpy_sjh.experiments import PhaseGrid, fourier_project_phase_cases  # noqa: E402
+from qudpy_sjh.experiments import (  # noqa: E402
+    PHASE_PROJECTION_CONVENTION,
+    PHASE_PROJECTION_CONVENTION_VERSION,
+    TARGET_PHASE_VECTOR_SEMANTICS,
+    PhaseGrid,
+    fourier_project_phase_cases,
+)
 from qudpy_sjh.experiments.ta import TADelayCenters, TASingleDelayPlan  # noqa: E402
 from qudpy_sjh.utils.core import ParaNormalizer  # noqa: E402
 from qudpy_sjh.utils.serialization import json_safe, write_json  # noqa: E402
@@ -79,9 +85,13 @@ def _load_plan(path: Path) -> dict[str, Any]:
             raise ValueError("Each target_phase_vector must contain pump and probe.")
         if any(float(value) != float(int(value)) for value in target.values()):
             raise ValueError("Phase-order coefficients must be integers.")
-    sign = int(payload.get("projection", {}).get("sign", 0))
-    if sign != 1:
-        raise ValueError("The requested projection convention requires sign=+1.")
+    projection = payload.get("projection", {})
+    if projection.get("phase_projection_convention") != PHASE_PROJECTION_CONVENTION:
+        raise ValueError("The phase-cycling plan requires the canonical exp(+i*m*phi) convention.")
+    if int(projection.get("phase_projection_convention_version", 0)) != PHASE_PROJECTION_CONVENTION_VERSION:
+        raise ValueError("Unsupported phase-projection convention version.")
+    if projection.get("target_phase_vector_semantics") != TARGET_PHASE_VECTOR_SEMANTICS:
+        raise ValueError("target_phase_vector must represent the physical phase-order vector m.")
     return payload
 
 
@@ -707,7 +717,6 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
     )
     flat_spectra = phase_spectra.reshape(n_pump * n_probe, energy_eV.size)
 
-    projection_sign = int(plan["projection"]["sign"])
     projection_normalize = bool(plan["projection"]["normalize"])
     channels: dict[str, np.ndarray] = {}
     for item in plan["channels"]:
@@ -719,7 +728,6 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
             target,
             phase_axis=0,
             normalize=projection_normalize,
-            sign=projection_sign,
         )
 
     window = tuple(float(value) for value in plan["analysis"]["energy_window_eV"])
@@ -794,7 +802,9 @@ def run_validation(args: argparse.Namespace) -> dict[str, Any]:
         "n_pump": n_pump,
         "n_probe": n_probe,
         "n_phase_cases": len(phase_vectors),
-        "projection_sign": projection_sign,
+        "phase_projection_convention": PHASE_PROJECTION_CONVENTION,
+        "phase_projection_convention_version": PHASE_PROJECTION_CONVENTION_VERSION,
+        "target_phase_vector_semantics": TARGET_PHASE_VECTOR_SEMANTICS,
         "projection_normalize": projection_normalize,
         "projection_definition": plan["projection"]["definition"],
         "readout_definition": (

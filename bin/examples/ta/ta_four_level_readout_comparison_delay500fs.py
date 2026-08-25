@@ -27,6 +27,7 @@ if __package__ is None or __package__ == "":
 	# 脚本可直接从仓库根目录外运行。
 	sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
+from qudpy_sjh.experiments import phase_projection_convention_metadata
 from qudpy_sjh.utils.core import (
 	NLevelPhysicalParams,
 	ParaNormalizer,
@@ -337,12 +338,12 @@ def run_demo(config: Config, *, output_dir: Path) -> dict[str, Any]:
 	a_g, warn_g = delta_absorbance(on_g["field_w"], off_g["field_w"])
 	a_lp, warn_lp = delta_absorbance(h_lp * on_full["field_w"], h_lp * off_full["field_w"])
 
-	# 对 pump 相位做不变平均，对 probe 相位取一阶 Fourier 分量。
+	# Physical target is (m_pump, m_probe) = (0, +1), using exp(+i*m*phi).
 	pc_on = np.zeros_like(on_full["field_w"], dtype = complex)
 	pc_off = np.zeros_like(on_full["field_w"], dtype = complex)
 	for pump_phase in config.phase_grid_rad:
 		for probe_phase in config.phase_grid_rad:
-			weight = np.exp(-1j * probe_phase) / (len(config.phase_grid_rad) ** 2)
+			weight = np.exp(1j * probe_phase) / (len(config.phase_grid_rad) ** 2)
 			field = make_field(config, pump_phase = pump_phase, probe_phase = probe_phase, name = "phase_cycled")
 			trace = run_trace(config, field = field, key = f"pc_pump_{pump_phase:.6f}_probe_{probe_phase:.6f}", output_dir = output_dir, normalizer = normalizer)
 			pc_on += weight * fft_field(t, trace["e_out"])["field_w"]
@@ -362,7 +363,24 @@ def run_demo(config: Config, *, output_dir: Path) -> dict[str, Any]:
 	data_path = output_dir / "data" / "readout_comparison.npz"; data_path.parent.mkdir(parents = True, exist_ok = True)
 	np.savez_compressed(data_path, time_fs = t, gate = gate, e_out_on = on["e_out"], e_out_off = off["e_out"], pc_on_w = pc_on, pc_off_w = pc_off, **{k: v for k, v in spec.items() if k != "metrics"})
 	model = build_four_level_model()
-	meta = {"config": config, "model": model, "figures": figures, "data_npz": data_path, "metrics": metrics, "warnings": {"case_a_near_zero_denominator": warn_g, "case_b_near_zero_denominator": warn_lp, "case_c_near_zero_denominator": warn_pc}, "readout_definition": "E_out = E_in + source_field_scale * Re[P(t)]"}
+	meta = {
+		"config": config,
+		"model": model,
+		"figures": figures,
+		"data_npz": data_path,
+		"metrics": metrics,
+		"warnings": {
+			"case_a_near_zero_denominator": warn_g,
+			"case_b_near_zero_denominator": warn_lp,
+			"case_c_near_zero_denominator": warn_pc,
+		},
+		"readout_definition": "E_out = E_in + source_field_scale * Re[P(t)]",
+		"phase_projection": {
+			**phase_projection_convention_metadata(),
+			"target_phase_vector": {"pump": 0, "probe": 1},
+			"normalize": True,
+		},
+	}
 	meta_path = write_json(output_dir / "meta.json", meta)
 	print(f"delay = {config.delay_fs:g} fs; pump center = {-config.delay_fs:g} fs; probe center = {config.probe_center_fs:g} fs")
 	print(f"gate open = {config.gate_start_fs:g} fs; readout window = [{config.gate_start_fs:g}, {config.gate_end_fs:g}] fs")

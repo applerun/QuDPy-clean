@@ -5,6 +5,9 @@ import unittest
 import numpy as np
 
 from qudpy_sjh.experiments.pulse_sequence import (
+    PHASE_PROJECTION_CONVENTION,
+    PHASE_PROJECTION_CONVENTION_VERSION,
+    TARGET_PHASE_VECTOR_SEMANTICS,
     PhaseCyclingPlan,
     PhaseGrid,
     ProjectedReadoutBundle,
@@ -411,13 +414,19 @@ class TAPhaseCyclingScaffoldTests(unittest.TestCase):
 
         self.assertEqual(spec.projection_quantity, "readout.spectrum.absorption")
         self.assertEqual(spec.signal_name, "projected_probe_absorption")
-        self.assertEqual(spec.sign, -1)
+        self.assertEqual(spec.sign, 1)
         self.assertTrue(spec.normalize)
         self.assertEqual([axis.name for axis in spec.axis_specs], ["energy_eV"])
         self.assertIn("phase_grid", payload)
         self.assertEqual(payload["target_phase_vector"], {"probe": 1})
         self.assertEqual(payload["projection_quantity"], "readout.spectrum.absorption")
         self.assertEqual(payload["signal_name"], "projected_probe_absorption")
+        self.assertEqual(payload["phase_projection_convention"], PHASE_PROJECTION_CONVENTION)
+        self.assertEqual(
+            payload["phase_projection_convention_version"],
+            PHASE_PROJECTION_CONVENTION_VERSION,
+        )
+        self.assertEqual(payload["target_phase_vector_semantics"], TARGET_PHASE_VECTOR_SEMANTICS)
 
         with self.assertRaises(ValueError):
             TAPhaseCyclingSpec(phase_grid=self._phase_grid(), target_phase_vector={})
@@ -427,6 +436,12 @@ class TAPhaseCyclingScaffoldTests(unittest.TestCase):
             TAPhaseCyclingSpec(phase_grid=self._phase_grid(), target_phase_vector={"probe": 1}, signal_name="")
         with self.assertRaises(ValueError):
             TAPhaseCyclingSpec(phase_grid=self._phase_grid(), target_phase_vector={"probe": 1}, sign=0)
+        with self.assertRaises(ValueError):
+            TAPhaseCyclingSpec(
+                phase_grid=self._phase_grid(),
+                target_phase_vector={"probe": 1},
+                sign=1.2,
+            )
         with self.assertRaises(TypeError):
             TAPhaseCyclingSpec(phase_grid="not_a_grid", target_phase_vector={"probe": 1})
 
@@ -441,7 +456,7 @@ class TAPhaseCyclingScaffoldTests(unittest.TestCase):
         self.assertEqual(phase_plan.target_phase_vector["probe"], 1)
         self.assertEqual(phase_plan.target_phase_vector["pump"], 0)
         self.assertEqual(phase_plan.projection.quantity, "readout.spectrum.absorption")
-        self.assertEqual(phase_plan.projection.sign, -1)
+        self.assertEqual(phase_plan.projection.sign, 1)
         self.assertTrue(phase_plan.projection.normalize)
         self.assertEqual(phase_plan.metadata["ta_context"], "pump_probe_phase_cycled")
 
@@ -466,7 +481,7 @@ class TAPhaseCyclingScaffoldTests(unittest.TestCase):
             phase = float(single_plan.field_plan.phase_vector["probe"])
             return _fake_result(
                 spectrum={
-                    "absorption": np.exp(1j * phase) * base_signal,
+                    "absorption": np.exp(-1j * phase) * base_signal,
                     "energy_eV": energy,
                 },
                 case_name=single_plan.case_name,
@@ -493,7 +508,7 @@ class TAPhaseCyclingScaffoldTests(unittest.TestCase):
             phase = float(single_plan.field_plan.phase_vector["probe"])
             return _fake_result(
                 spectrum={
-                    "absorption": np.asarray([np.exp(1j * phase)]),
+                    "absorption": np.asarray([np.exp(-1j * phase)]),
                     "energy_eV": np.asarray([1.55]),
                 },
                 case_name=single_plan.case_name,

@@ -17,7 +17,9 @@
     "absolute_intensity_interpretation": false
   },
   "projection": {
-    "sign": 1,
+    "phase_projection_convention": "exp_plus_i_m_phi",
+    "phase_projection_convention_version": 1,
+    "target_phase_vector_semantics": "physical_phase_order_vector_m",
     "normalize": true,
     "definition": "S_target = mean(S_case * exp(+i*(m_pu*phi_pu + m_pr*phi_pr_int)))"
   },

@@ -40,6 +40,13 @@ def _load_plan(path: Path) -> dict[str, Any]:
         raise ValueError("source_grids must be [8, 16].")
     if float(plan["fixed_lo"]["probe_lo_phase_rad"]) != 0.0:
         raise ValueError("This validation requires a fixed phase-zero probe LO.")
+    projection = plan.get("projection", {})
+    if projection.get("phase_projection_convention") != "exp_plus_i_m_phi":
+        raise ValueError("The fixed-LO plan requires the canonical exp(+i*m*phi) convention.")
+    if int(projection.get("phase_projection_convention_version", 0)) != 1:
+        raise ValueError("Unsupported phase-projection convention version.")
+    if projection.get("target_phase_vector_semantics") != "physical_phase_order_vector_m":
+        raise ValueError("Fixed-LO channel labels must represent physical phase orders.")
     return plan
 
 
@@ -198,6 +205,8 @@ def _detector_phase_cases(
 
 
 def _phase_dft(phase_cases: np.ndarray) -> np.ndarray:
+    """Project phase cases with NumPy's normalized exp(+2*pi*i*k*n/N) IFFT."""
+
     values = np.asarray(phase_cases)
     if values.ndim != 3 or values.shape[0] != values.shape[1]:
         raise ValueError("phase_cases must be N x N x energy.")

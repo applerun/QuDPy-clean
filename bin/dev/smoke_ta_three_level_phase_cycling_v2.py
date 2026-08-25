@@ -440,7 +440,6 @@ def run_v2_workflow(
             ),
         ),
         normalize=True,
-        sign=-1,
         metadata={
             "meaning": "legacy pump-phase average",
             "not_a_universal_ta_phase_convention": True,

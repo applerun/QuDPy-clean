@@ -14,8 +14,9 @@
 当前源码已经具备可靠的 physical field、pulse sequence 和基础 phase-grid
 表达能力，但尚未完成目标 workflow。特别是：
 
-- 当前 Fourier projection 的 public/default behavior 仍包含 legacy
-  `sign=-1`；目标 convention 是固定的 `+i` projection；
+- canonical Fourier projection runtime 已使用固定含义的 `+i` projection；
+  显式 `sign=-1` 仅作为发出 `DeprecationWarning` 的临时 legacy compatibility
+  path 保留，不再定义 canonical `target_phase_vector` 语义；
 - 当前 `ReadoutSpec` 和 readout execution 嵌在 `SingleRunPlan` 中；
 - 当前 heavy `PhaseCyclingPlan` 会生成 case、执行 solver/readout 并做投影；
 - 当前 TA phase-cycling scaffold 在 recipe-specific postprocess 之前投影
@@ -169,9 +170,14 @@ S(phi) proportional to exp(-i*k*phi)
 `target_phase_vector` 直接表示 physical phase-order vector `m`。未来 public API
 不应再把 configurable `sign` 当作 phase-order semantics 的组成部分。
 
-> **Current mismatch:** 当前 implementation 的 projection helpers/specs 默认仍为
-> `sign=-1`。这将在 Milestone 1 迁移；在迁移完成前，不能根据本文档假定 runtime
-> 已使用 `+i` convention。
+> **Runtime status:** canonical projection helpers/specs 现已默认采用 `sign=+1`，
+> 并在结果 metadata 中记录 `exp_plus_i_m_phi`、convention version `1` 以及
+> physical phase-order target semantics。显式 `sign=-1` 暂时保留为 deprecated
+> compatibility path；新代码、tests 和 examples 不应依赖它。
+
+旧结果若只有 `S_0_1` 等 channel label，或只记录旧 `projection_sign` 而没有明确
+convention/version，可能存在 phase-order 语义歧义。本项目不在 Milestone 1 自动
+改写历史结果；解释旧数据时必须同时核对生成代码、sign 和 target definition。
 
 ## PhaseGrid 的数学边界
 
@@ -368,8 +374,8 @@ Milestone 0 不删除、rename 或改变以上任何 runtime object。
 
 ## Planned Migration Boundaries
 
-- **Milestone 1:** 迁移 Fourier implementation 到固定 `+i` convention，增加
-  convention/version metadata 与 synthetic harmonic tests。
+- **Milestone 1 completed:** canonical Fourier implementation 已迁移到固定含义的
+  `+i` convention，并加入 convention/version metadata 与 synthetic harmonic tests。
 - **Later readout milestone:** 从 `SingleRunPlan` 抽取 behavioral `ReadoutPlan`，
   支持 interaction-field reference、external field、full/weak detector modes。
 - **Later recipe milestone:** 先 readout，再 `Recipe.postprocess`，最后 generic

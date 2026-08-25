@@ -8,6 +8,7 @@ scan、checkpoint path builder，也不修改 solver / run_case 行为。
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field, replace
 from itertools import product
@@ -28,6 +29,11 @@ from qudpy_sjh.experiments.pulse_sequence.single_run import (
 
 PhaseVector = dict[str, float]
 TargetPhaseVector = dict[str, int]
+
+PHASE_PROJECTION_CONVENTION = "exp_plus_i_m_phi"
+PHASE_PROJECTION_CONVENTION_VERSION = 1
+TARGET_PHASE_VECTOR_SEMANTICS = "physical_phase_order_vector_m"
+_LEGACY_PHASE_PROJECTION_CONVENTION = "legacy_exp_minus_i_target_phi"
 
 
 def _stable_unique_phase_tags(tags: Sequence[str]) -> tuple[str, ...]:
@@ -101,7 +107,13 @@ def normalize_target_phase_vector(
 
 @dataclass(frozen=True)
 class PhaseGrid:
-    """任意 phase tags 的笛卡尔积 phase grid。"""
+    """任意 phase tags 的笛卡尔积 phase grid。
+
+    Explicit finite phase values are accepted. The equal-weight projector below
+    has exact discrete-orthogonality guarantees for the intended complete uniform
+    grids; accepting nonuniform values does not imply general nonuniform Fourier
+    inversion.
+    """
 
     phases_by_tag: dict[str, tuple[float, ...]]
 
@@ -161,19 +173,43 @@ def build_uniform_phase_grid(
     return PhaseGrid({tag: phases for tag in tags})
 
 
-def phase_projection_weight(
+def _validate_projection_sign(sign: int, *, warn_legacy: bool) -> int:
+    if sign not in {-1, 1}:
+        raise ValueError("sign must be +1 or -1.")
+    value = int(sign)
+    if warn_legacy and value == -1:
+        warnings.warn(
+            "sign=-1 is a deprecated legacy phase-projection convention. "
+            "Canonical target_phase_vector semantics use exp(+i*m*phi) with sign=+1.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    return value
+
+
+def phase_projection_convention_metadata(*, sign: int = 1) -> dict[str, Any]:
+    """Return explicit metadata for canonical or legacy projection semantics."""
+
+    value = _validate_projection_sign(sign, warn_legacy=False)
+    if value == 1:
+        return {
+            "phase_projection_convention": PHASE_PROJECTION_CONVENTION,
+            "phase_projection_convention_version": PHASE_PROJECTION_CONVENTION_VERSION,
+            "target_phase_vector_semantics": TARGET_PHASE_VECTOR_SEMANTICS,
+        }
+    return {
+        "phase_projection_convention": _LEGACY_PHASE_PROJECTION_CONVENTION,
+        "phase_projection_convention_version": 0,
+        "target_phase_vector_semantics": "legacy_target_interpreted_with_projection_sign",
+    }
+
+
+def _phase_projection_weight(
     phase_vector: Mapping[str, float],
     target_phase_vector: Mapping[str, int],
     *,
-    sign: int = -1,
+    sign: int,
 ) -> complex:
-    """计算单个 phase case 的 Fourier projection weight。
-
-    约定为 `exp(sign * 1j * sum(target[tag] * phase[tag]))`，默认 sign=-1。
-    """
-
-    if sign not in {-1, 1}:
-        raise ValueError("sign must be +1 or -1.")
     phase_sum = 0.0
     for tag, coefficient in target_phase_vector.items():
         integer = _integer_coefficient(coefficient, tag=tag)
@@ -185,6 +221,24 @@ def phase_projection_weight(
     return complex(np.exp(sign * 1j * phase_sum))
 
 
+def phase_projection_weight(
+    phase_vector: Mapping[str, float],
+    target_phase_vector: Mapping[str, int],
+    *,
+    sign: int = 1,
+) -> complex:
+    """计算单个 phase case 的 Fourier projection weight。
+
+    Canonical convention is ``exp(+i * sum_j(m_j * phi_j))``. Therefore
+    ``target_phase_vector`` directly represents the physical phase-order vector
+    ``m``. Explicit ``sign=-1`` remains temporarily available only for legacy
+    compatibility and is deprecated.
+    """
+
+    value = _validate_projection_sign(sign, warn_legacy=True)
+    return _phase_projection_weight(phase_vector, target_phase_vector, sign=value)
+
+
 def fourier_project_phase_cases(
     values: np.ndarray,
     phase_vectors: Sequence[Mapping[str, float]],
@@ -192,11 +246,18 @@ def fourier_project_phase_cases(
     *,
     phase_axis: int = 0,
     normalize: bool = True,
-    sign: int = -1,
+    sign: int = 1,
 ) -> np.ndarray:
-    """对任意 ndarray 的 phase axis 做 Fourier projection。"""
+    """对任意 ndarray 的 phase axis 做 equal-weight Fourier projection。
+
+    Canonical weights are ``exp(+i*m dot phi)`` and targets are physical phase
+    orders. Complete uniform grids provide the intended discrete orthogonality.
+    Explicit nonuniform phase values are accepted, but this function is not a
+    general nonuniform Fourier inversion.
+    """
 
     array = np.asarray(values)
+    projection_sign = _validate_projection_sign(sign, warn_legacy=True)
     if array.ndim == 0:
         raise ValueError("values must have at least one phase axis.")
     axis = int(phase_axis)
@@ -213,7 +274,7 @@ def fourier_project_phase_cases(
     moved = np.moveaxis(array, axis, 0).astype(np.complex128, copy=False)
     weights = np.asarray(
         [
-            phase_projection_weight(phase_vector, target_phase_vector, sign=sign)
+            _phase_projection_weight(phase_vector, target_phase_vector, sign=projection_sign)
             for phase_vector in phase_vectors
         ],
         dtype=np.complex128,
@@ -232,7 +293,7 @@ class PhaseProjectionSpec:
     quantity: str
     phase_axis: int = 0
     normalize: bool = True
-    sign: int = -1
+    sign: int = 1
     require_matching_shape: bool = True
     metadata: dict[str, Any] = dataclass_field(default_factory=dict)
 
@@ -240,11 +301,11 @@ class PhaseProjectionSpec:
         quantity = str(self.quantity).strip()
         if not quantity:
             raise ValueError("quantity must not be empty.")
-        if self.sign not in {-1, 1}:
-            raise ValueError("sign must be +1 or -1.")
+        projection_sign = _validate_projection_sign(self.sign, warn_legacy=True)
         object.__setattr__(self, "quantity", quantity)
         object.__setattr__(self, "phase_axis", int(self.phase_axis))
         object.__setattr__(self, "normalize", bool(self.normalize))
+        object.__setattr__(self, "sign", projection_sign)
         object.__setattr__(self, "require_matching_shape", bool(self.require_matching_shape))
         object.__setattr__(self, "metadata", dict(self.metadata))
 
@@ -257,6 +318,7 @@ class PhaseProjectionSpec:
             "sign": int(self.sign),
             "require_matching_shape": bool(self.require_matching_shape),
             "metadata": dict(self.metadata),
+            **phase_projection_convention_metadata(sign=self.sign),
         }
 
 
@@ -451,6 +513,7 @@ class PhaseCyclingResult:
             "values_shape": tuple(np.asarray(self.values).shape),
             "projected_shape": tuple(np.asarray(self.projected).shape),
             "projection_sign": int(self.projection.sign),
+            **phase_projection_convention_metadata(sign=self.projection.sign),
             "normalize": bool(self.projection.normalize),
             "phase_grid": self.phase_grid.to_dict(),
             "projection": self.projection.to_dict(),
@@ -713,6 +776,9 @@ def build_projected_readout_bundle(
 __all__ = [
     "PhaseVector",
     "TargetPhaseVector",
+    "PHASE_PROJECTION_CONVENTION",
+    "PHASE_PROJECTION_CONVENTION_VERSION",
+    "TARGET_PHASE_VECTOR_SEMANTICS",
     "AxisMetadataSpec",
     "PhaseGrid",
     "PhaseProjectionSpec",
@@ -722,6 +788,7 @@ __all__ = [
     "ProjectedReadoutBundle",
     "normalize_target_phase_vector",
     "phase_projection_weight",
+    "phase_projection_convention_metadata",
     "fourier_project_phase_cases",
     "build_uniform_phase_grid",
     "extract_single_run_quantity",
