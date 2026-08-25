@@ -412,14 +412,43 @@ grid 上 alias-equivalent orders `m` 与 `m+qN` 被允许并产生相同离散�
 
 ## Persistence
 
-一次 Recipe execution 应保存：
+Milestone 5 后 canonical persistence hierarchy 是：
 
-1. 所有昂贵 `SimRes`；
-2. final projected data；
-3. recipe/execution metadata。
+```text
+DynamicsResult / SimRes .ckp
+  = expensive solver trajectory
+  -> recompute PolarizationResult
+  -> apply another ReadoutPlan
+  -> Recipe.postprocess
+  -> project_phase_orders
+
+lightweight projected mapping
+  = final scientific arrays + minimal interpretation metadata
+  -> save_projected_result(...)
+  -> compressed NPZ + strict JSON
+  -> load_projected_result(...)
+```
+
+Public helpers：
+
+```python
+save_projected_result(result: Mapping[str, Any], path: str | Path) -> dict[str, Path]
+load_projected_result(path: str | Path) -> dict[str, Any]
+```
+
+NPZ 无损保存 real/complex projected arrays 与 axis arrays；JSON manifest 保存稳定
+`axis_names` 顺序、target names/order mappings、实际 `PhaseGrid.phases_by_tag`、M1
+convention/version、normalization、phase-axis mapping 与 caller 提供的 recipe/provenance
+metadata。loader 使用 `allow_pickle=False` 并重建 M4 lightweight mapping，不构造
+新的 result class。
 
 中间 `S(phi)` 不要求默认持久化，因为它可以从保存的 `SimRes` 经 readout 和
-Recipe postprocess 重建。projected output 至少保存：
+Recipe postprocess 重建。`PolarizationResult` 与 `ReadoutResult` 同样是便宜的 derived
+data，不是一级 checkpoint ownership。debugging 时可由 caller 显式把 denominator
+mask 等 provenance 附加到 projected metadata；不能只靠 NaN position 推断 invalid
+denominator。
+
+projected output 保存：
 
 - target phase-order vector(s)；
 - phase convention 及 convention/schema version；
@@ -428,7 +457,13 @@ Recipe postprocess 重建。projected output 至少保存：
 - remaining `axis_names` 与 `axis_values`；
 - 必要 provenance。
 
-不要为了 persistence 建立大型 result hierarchy。
+`json_safe` 对所有 NumPy ndarray 都递归执行 scalar policy；real/complex array 内的
+NaN/Inf 会转成 JSON `null`，所以 `write_json(..., allow_nan=False)` 保持严格有效。
+科学 arrays 中的 NaN/Inf 则保留在 NPZ，不发生数值替换。
+
+不要为了 persistence 建立大型 result hierarchy。旧 TA `relative_response` 和旧
+`absorption` naming 只在 legacy outputs 中保留原含义；canonical persistence 不把
+它们静默改名为 `delta_T_over_T` 或 `absorption_like_response`。
 
 ## Current Abstraction Status
 
@@ -439,15 +474,17 @@ Recipe postprocess 重建。projected output 至少保存：
 | heavy `PhaseCyclingPlan` | compatibility; target-to-remove | canonical path 不再需要；当前仍服务旧 examples/tests |
 | `PhaseProjectionSpec` | compatibility; target-to-remove | canonical API 直接接受 data/axes/grid/targets/normalization |
 | `PhaseCaseRecord` | move/remove from projection layer | execution provenance 属于 Recipe/execution manifest |
-| heavy `PhaseCyclingResult` | simplify/remove if unnecessary | projected ndarray(s) 加最小 metadata 即可 |
-| `AxisMetadataSpec` | candidate for simplification/removal | 当前与 ndarray dimension 绑定不足且依赖 SingleRun quantity extraction |
-| `ProjectedReadoutBundle` | target-to-remove | projection 输入是 recipe observable，不一定是 readout |
+| heavy `PhaseCyclingResult` | legacy-only through M6 | 仅供 heavy runner；canonical persistence 不接受或生成它 |
+| `AxisMetadataSpec` | deprecated compatibility | canonical path 使用 plain `axis_names`/`axis_values` |
+| `ProjectedReadoutBundle` | deprecated compatibility | canonical save/load 直接操作 M4 mapping |
 | `TAPhaseCyclingSpec` | split into Recipe inputs | targets 属于 Recipe；projection math 属于 generic layer |
-| `TAPhaseCycledPumpProbeResult` | target-to-remove | projected data 应保持 experiment-generic |
+| `TAPhaseCycledPumpProbeResult` | deprecated compatibility | M3+M4 使用 `TAPrePCObservable -> project_phase_orders` |
+| `TAPrePCObservable` | keep | 薄 recipe-boundary wrapper，保留 denominator mask/diagnostics 与 named axes |
+| `save/load_projected_result` | keep | NPZ arrays + strict JSON metadata，无 runtime result class |
 | TA projected-bundle builders | target-to-remove | 不再需要 readout-specific projection wrapper |
 | `ReadoutPlan` / `ReadoutResult` | keep | M2 已实现独立 polarization-to-detector stage |
 | `ReadoutSpec` | temporary compatibility | 只通过 adapter 翻译为 canonical `ReadoutPlan` |
-| `SingleRunReadoutResult` | temporary alias | 当前 alias 到独立 `ReadoutResult`；名称清理留给 M5 |
+| `SingleRunReadoutResult` | temporary alias through M6 | 当前 alias 到独立 `ReadoutResult`；M5 不扩大兼容清理范围 |
 | `SingleRunPlan.readout` | temporary compatibility | `execute()` 忽略它；旧 runner 显式调用 compatibility method |
 | `SingleRunFieldPlan` | defer | 是否仍需单独存在要在 execution/readout 重构后评估 |
 | `independent_phase` | defer | 可能形成 phase-independence 双 source of truth |
@@ -466,10 +503,11 @@ Milestone 0 不删除、rename 或改变以上任何 runtime object。
   phase dependency 执行并在 `T`/pump-phase 方向 broadcast。
 - **Milestone 4 completed:** `project_phase_orders` 已实现 pure named-axis projection、
   unequal `N_j` 与 multiple targets；canonical path 不再依赖 heavy `PhaseCyclingPlan`。
-- **Milestone 5 deferred:** projected/result wrappers 与 persistence cleanup 尚未开始。
-- **Milestone 6 deferred:** TA phase-step scientific convergence 与 legacy cleanup 尚未开始。
-- **Later cleanup milestone:** 数值/物理验证和 example/test migration 后，才标记
-  heavy runner、bundle 和 TA projected wrappers deprecated，随后删除。
+- **Milestone 5 completed:** canonical projected mapping 已支持 NPZ+JSON round-trip；
+  legacy readout/TA projected wrappers 已标 deprecated compatibility，SimRes 仍是昂贵
+  state 的 checkpoint ownership。
+- **Milestone 6 deferred:** scientific convergence 验证后再清理 heavy runner 与已
+  deprecated wrappers；M5 不删除这些 compatibility APIs。
 - **Separate system milestone:** 修复 `NLevelSystem.initial_state` 与 transition
   dephasing 到 solver execution 的完整映射。
 

@@ -3,11 +3,19 @@ from __future__ import annotations
 import json
 import math
 import unittest
+from pathlib import Path
+from uuid import uuid4
 
 import numpy as np
 from qutip import Qobj
 
-from qudpy_sjh.experiments import ReadoutPlan, ReadoutResult, project_phase_orders
+from qudpy_sjh.experiments import (
+    ReadoutPlan,
+    ReadoutResult,
+    load_projected_result,
+    project_phase_orders,
+    save_projected_result,
+)
 from qudpy_sjh.experiments.pulse_sequence import PhaseGrid, PulseSpec, SingleRunResult
 from qudpy_sjh.experiments.ta import (
     TAPrePCRecipe,
@@ -292,7 +300,11 @@ class TARecipePostprocessTests(unittest.TestCase):
                 "probe": tuple(2.0 * math.pi * index / 3 for index in range(3)),
             }
         )
-        recipe = _recipe(delays_fs=(0.0,), phase_grid=grid)
+        recipe = _recipe(
+            delays_fs=(0.0,),
+            phase_grid=grid,
+            denominator_abs_threshold=3.0,
+        )
         off = np.asarray([2.0, 4.0])
         pump_off = {
             (probe_index,): _synthetic_readout(
@@ -324,10 +336,41 @@ class TARecipePostprocessTests(unittest.TestCase):
             phase_grid=recipe.phase_grid,
             targets={"S_0_1": {"pump": 0, "probe": 1}},
         )
+        projected["metadata"]["ta_denominator_policy"] = pre_pc.metadata[
+            "denominator_policy"
+        ]
+        projected["metadata"]["ta_valid_reference_mask"] = pre_pc.valid_reference_mask
+        base = Path.cwd() / f".tmp_ta_projected_{uuid4().hex}"
+        npz_path = Path(f"{base}.npz")
+        json_path = Path(f"{base}.json")
+        self.addCleanup(npz_path.unlink, missing_ok=True)
+        self.addCleanup(json_path.unlink, missing_ok=True)
+        save_projected_result(projected, base)
+        loaded = load_projected_result(base)
 
         self.assertEqual(projected["axis_names"], ("T", "energy_eV"))
         self.assertEqual(projected["projected"]["S_0_1"].shape, (1, 2))
-        np.testing.assert_allclose(projected["projected"]["S_0_1"], 0.5, atol=1.0e-12)
+        np.testing.assert_allclose(
+            projected["projected"]["S_0_1"],
+            np.asarray([[np.nan, 0.5]]),
+            atol=1.0e-12,
+            equal_nan=True,
+        )
+        self.assertEqual(loaded["axis_names"], ("T", "energy_eV"))
+        np.testing.assert_allclose(loaded["axis_values"]["T"], [0.0])
+        np.testing.assert_allclose(loaded["axis_values"]["energy_eV"], [1.4, 1.6])
+        self.assertEqual(loaded["targets"], {"S_0_1": {"pump": 0, "probe": 1}})
+        np.testing.assert_allclose(
+            loaded["projected"]["S_0_1"],
+            projected["projected"]["S_0_1"],
+            equal_nan=True,
+        )
+        loaded_mask = np.asarray(
+            loaded["metadata"]["ta_valid_reference_mask"],
+            dtype=bool,
+        )
+        np.testing.assert_array_equal(loaded_mask, pre_pc.valid_reference_mask)
+        self.assertFalse(loaded_mask[..., 0].any())
 
 
 class TARecipeReadoutIntegrationTests(unittest.TestCase):

@@ -129,7 +129,7 @@ def extract_single_run_quantity(
 
 @dataclass(frozen=True)
 class AxisMetadataSpec:
-    """Legacy projected-bundle axis extraction configuration."""
+    """Deprecated projected-bundle axis adapter retained for compatibility."""
 
     name: str
     quantity: str
@@ -170,12 +170,13 @@ class AxisMetadataSpec:
             "rtol": float(self.rtol),
             "atol": float(self.atol),
             "metadata": dict(self.metadata),
+            "compatibility_status": "deprecated; canonical projection uses axis_names/axis_values",
         }
 
 
 @dataclass
 class ProjectedReadoutBundle:
-    """Legacy readout-specific projected result retained through M4."""
+    """Deprecated readout-specific projected wrapper retained through M6."""
 
     signal_name: str
     signal_quantity: str
@@ -215,6 +216,9 @@ class ProjectedReadoutBundle:
             "axis_shapes": {name: tuple(np.asarray(values).shape) for name, values in self.axes.items()},
             "phase_result_summary": dict(self.phase_result_summary),
             "metadata": dict(self.metadata),
+            "compatibility_status": (
+                "deprecated; canonical output is the lightweight project_phase_orders mapping"
+            ),
         }
         if include_arrays:
             payload["projected_signal"] = _json_array(projected)
@@ -498,7 +502,7 @@ def build_projected_readout_bundle(
     axis_specs: Sequence[AxisMetadataSpec] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> ProjectedReadoutBundle:
-    """把 Fourier-projected signal 与非投影 axis metadata 配对。
+    """Build the deprecated readout-specific compatibility bundle.
 
     axis metadata 只从已有 phase cases 的 `SingleRunResult` 中读取，不做
     Fourier projection，也不重新运行任何 single-run。

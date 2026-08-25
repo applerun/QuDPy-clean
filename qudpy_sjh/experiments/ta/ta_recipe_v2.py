@@ -373,10 +373,11 @@ class TAPhaseCyclingSpec:
 
 @dataclass
 class TAPhaseCycledPumpProbeResult:
-    """单 delay pump-probe phase projection 的结果容器。
+    """Deprecated TA-specific projected wrapper retained for compatibility.
 
-    本结果只保存 phase-projected pump-probe readout bundle，不做
-    pump-probe minus probe-only subtraction，不写 TA map，也不保存文件。
+    Canonical M3+M4 code uses ``TAPrePCObservable`` followed by the generic
+    lightweight ``project_phase_orders`` mapping.  This wrapper remains for the
+    legacy heavy-runner path through M6.
     """
 
     case_name: str
@@ -410,6 +411,9 @@ class TAPhaseCycledPumpProbeResult:
             "bundle": self.bundle.to_dict(include_arrays=include_arrays),
             "metadata": dict(self.metadata),
             "ta_phase_cycling_scope": "pump_probe_projection_only; no TA subtraction",
+            "compatibility_status": (
+                "deprecated; use TAPrePCObservable followed by project_phase_orders"
+            ),
         }
 
 

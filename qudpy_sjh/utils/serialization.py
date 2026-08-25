@@ -60,9 +60,9 @@ def json_safe(value: Any) -> Any:
             {item.name: getattr(value, item.name) for item in dataclass_fields(value)}
         )
     if isinstance(value, complex):
-        return {"real": float(value.real), "imag": float(value.imag)}
+        return json_safe({"real": float(value.real), "imag": float(value.imag)})
     if isinstance(value, np.ndarray):
-        return json_safe(value.tolist()) if np.iscomplexobj(value) else value.tolist()
+        return json_safe(value.tolist())
     if isinstance(value, np.generic):
         return json_safe(value.item())
     if isinstance(value, Path):
