@@ -1,52 +1,37 @@
-"""Generic phase-grid execution and Fourier projection utilities.
+"""Legacy phase-grid execution and projected-result compatibility utilities.
 
-本模块是 experiment-level utility：它重复调用已有 `SingleRunPlan`，从
-`SingleRunResult` 中提取一个 readout array，并按 `target_phase_vector`
-做 Fourier projection。这里不包含 TA subtraction、2DES recipe、delay
-scan、checkpoint path builder，也不修改 solver / run_case 行为。
+Canonical pure Fourier mathematics lives in ``phase_projection``.  The heavy
+runner and result wrappers remain here temporarily for compatibility.
 """
 
 from __future__ import annotations
 
-import warnings
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field as dataclass_field, replace
-from itertools import product
 from typing import Any
 
 import numpy as np
 
-from qudpy_sjh.experiments.pulse_sequence.pulse_sequence import (
-    SingleRunFieldPlan,
-    validate_phase_tag,
+from qudpy_sjh.experiments.pulse_sequence.phase_projection import (
+    PHASE_PROJECTION_CONVENTION,
+    PHASE_PROJECTION_CONVENTION_VERSION,
+    TARGET_PHASE_VECTOR_SEMANTICS,
+    PhaseGrid,
+    PhaseVector,
+    TargetPhaseVector,
+    _validate_projection_sign,
+    build_uniform_phase_grid,
+    fourier_project_phase_cases,
+    normalize_target_phase_vector,
+    phase_projection_convention_metadata,
+    phase_projection_weight,
+    project_phase_orders,
 )
 from qudpy_sjh.experiments.pulse_sequence.single_run import (
     SingleRunPlan,
     SingleRunReadoutResult,
     SingleRunResult,
 )
-
-
-PhaseVector = dict[str, float]
-TargetPhaseVector = dict[str, int]
-
-PHASE_PROJECTION_CONVENTION = "exp_plus_i_m_phi"
-PHASE_PROJECTION_CONVENTION_VERSION = 1
-TARGET_PHASE_VECTOR_SEMANTICS = "physical_phase_order_vector_m"
-_LEGACY_PHASE_PROJECTION_CONVENTION = "legacy_exp_minus_i_target_phi"
-
-
-def _stable_unique_phase_tags(tags: Sequence[str]) -> tuple[str, ...]:
-    seen: set[str] = set()
-    ordered: list[str] = []
-    for tag in tags:
-        text = validate_phase_tag(tag, allow_none=False)
-        assert text is not None
-        if text in seen:
-            continue
-        seen.add(text)
-        ordered.append(text)
-    return tuple(ordered)
 
 
 def _json_array(value: Any) -> Any:
@@ -63,232 +48,9 @@ def _json_array(value: Any) -> Any:
     return value
 
 
-def _integer_coefficient(value: int | float, *, tag: str) -> int:
-    coefficient = float(value)
-    if not np.isfinite(coefficient):
-        raise ValueError(f"target coefficient for {tag!r} must be finite.")
-    rounded = int(round(coefficient))
-    if not np.isclose(coefficient, rounded, rtol=0.0, atol=1.0e-12):
-        raise ValueError(f"target coefficient for {tag!r} must be an integer. Got {value!r}.")
-    return rounded
-
-
-def normalize_target_phase_vector(
-    target_phase_vector: Mapping[str, int | float],
-    *,
-    known_tags: Sequence[str] | None = None,
-    fill_missing_with_zero: bool = True,
-) -> TargetPhaseVector:
-    """标准化 Fourier projection 的整数 target vector。
-
-    返回值在 `fill_missing_with_zero=True` 时保留 known tags 的 0 项，便于
-    后续 metadata 明确记录完整 phase-channel 定义。
-    """
-
-    data: TargetPhaseVector = {}
-    for key, value in target_phase_vector.items():
-        tag = validate_phase_tag(key, allow_none=False)
-        assert tag is not None
-        data[tag] = _integer_coefficient(value, tag=tag)
-
-    if known_tags is None:
-        return data
-
-    tags = _stable_unique_phase_tags(tuple(known_tags))
-    known = set(tags)
-    unknown = sorted(set(data) - known)
-    if unknown:
-        raise ValueError(f"target_phase_vector contains unknown phase tags: {unknown}")
-    if fill_missing_with_zero:
-        for tag in tags:
-            data.setdefault(tag, 0)
-    return data
-
-
-@dataclass(frozen=True)
-class PhaseGrid:
-    """任意 phase tags 的笛卡尔积 phase grid。
-
-    Explicit finite phase values are accepted. The equal-weight projector below
-    has exact discrete-orthogonality guarantees for the intended complete uniform
-    grids; accepting nonuniform values does not imply general nonuniform Fourier
-    inversion.
-    """
-
-    phases_by_tag: dict[str, tuple[float, ...]]
-
-    def __post_init__(self) -> None:
-        normalized: dict[str, tuple[float, ...]] = {}
-        for key, values in self.phases_by_tag.items():
-            tag = validate_phase_tag(key, allow_none=False)
-            assert tag is not None
-            phases = tuple(float(value) for value in values)
-            if not phases:
-                raise ValueError(f"PhaseGrid tag {tag!r} must contain at least one phase.")
-            for phase in phases:
-                if not np.isfinite(phase):
-                    raise ValueError(f"PhaseGrid phase for tag {tag!r} must be finite.")
-            normalized[tag] = phases
-        object.__setattr__(self, "phases_by_tag", normalized)
-
-    @property
-    def tags(self) -> tuple[str, ...]:
-        return tuple(self.phases_by_tag)
-
-    def iter_phase_vectors(self) -> Iterator[PhaseVector]:
-        if not self.tags:
-            yield {}
-            return
-        phase_lists = [self.phases_by_tag[tag] for tag in self.tags]
-        for phases in product(*phase_lists):
-            yield {tag: float(phase) for tag, phase in zip(self.tags, phases)}
-
-    def __len__(self) -> int:
-        total = 1
-        for tag in self.tags:
-            total *= len(self.phases_by_tag[tag])
-        return int(total)
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "class": self.__class__.__name__,
-            "tags": list(self.tags),
-            "phases_by_tag": {tag: list(phases) for tag, phases in self.phases_by_tag.items()},
-            "n_phase_cases": len(self),
-        }
-
-
-def build_uniform_phase_grid(
-    phase_tags: Sequence[str],
-    *,
-    n_steps: int = 4,
-) -> PhaseGrid:
-    """构造每个 phase tag 都使用同一均匀相位采样的 grid。"""
-
-    steps = int(n_steps)
-    if steps < 1:
-        raise ValueError("n_steps must be >= 1.")
-    tags = _stable_unique_phase_tags(tuple(phase_tags))
-    phases = tuple(float(2.0 * np.pi * index / steps) for index in range(steps))
-    return PhaseGrid({tag: phases for tag in tags})
-
-
-def _validate_projection_sign(sign: int, *, warn_legacy: bool) -> int:
-    if sign not in {-1, 1}:
-        raise ValueError("sign must be +1 or -1.")
-    value = int(sign)
-    if warn_legacy and value == -1:
-        warnings.warn(
-            "sign=-1 is a deprecated legacy phase-projection convention. "
-            "Canonical target_phase_vector semantics use exp(+i*m*phi) with sign=+1.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-    return value
-
-
-def phase_projection_convention_metadata(*, sign: int = 1) -> dict[str, Any]:
-    """Return explicit metadata for canonical or legacy projection semantics."""
-
-    value = _validate_projection_sign(sign, warn_legacy=False)
-    if value == 1:
-        return {
-            "phase_projection_convention": PHASE_PROJECTION_CONVENTION,
-            "phase_projection_convention_version": PHASE_PROJECTION_CONVENTION_VERSION,
-            "target_phase_vector_semantics": TARGET_PHASE_VECTOR_SEMANTICS,
-        }
-    return {
-        "phase_projection_convention": _LEGACY_PHASE_PROJECTION_CONVENTION,
-        "phase_projection_convention_version": 0,
-        "target_phase_vector_semantics": "legacy_target_interpreted_with_projection_sign",
-    }
-
-
-def _phase_projection_weight(
-    phase_vector: Mapping[str, float],
-    target_phase_vector: Mapping[str, int],
-    *,
-    sign: int,
-) -> complex:
-    phase_sum = 0.0
-    for tag, coefficient in target_phase_vector.items():
-        integer = _integer_coefficient(coefficient, tag=tag)
-        if integer == 0:
-            continue
-        if tag not in phase_vector:
-            raise ValueError(f"phase_vector is missing non-zero target tag: {tag!r}")
-        phase_sum += float(integer) * float(phase_vector[tag])
-    return complex(np.exp(sign * 1j * phase_sum))
-
-
-def phase_projection_weight(
-    phase_vector: Mapping[str, float],
-    target_phase_vector: Mapping[str, int],
-    *,
-    sign: int = 1,
-) -> complex:
-    """计算单个 phase case 的 Fourier projection weight。
-
-    Canonical convention is ``exp(+i * sum_j(m_j * phi_j))``. Therefore
-    ``target_phase_vector`` directly represents the physical phase-order vector
-    ``m``. Explicit ``sign=-1`` remains temporarily available only for legacy
-    compatibility and is deprecated.
-    """
-
-    value = _validate_projection_sign(sign, warn_legacy=True)
-    return _phase_projection_weight(phase_vector, target_phase_vector, sign=value)
-
-
-def fourier_project_phase_cases(
-    values: np.ndarray,
-    phase_vectors: Sequence[Mapping[str, float]],
-    target_phase_vector: Mapping[str, int],
-    *,
-    phase_axis: int = 0,
-    normalize: bool = True,
-    sign: int = 1,
-) -> np.ndarray:
-    """对任意 ndarray 的 phase axis 做 equal-weight Fourier projection。
-
-    Canonical weights are ``exp(+i*m dot phi)`` and targets are physical phase
-    orders. Complete uniform grids provide the intended discrete orthogonality.
-    Explicit nonuniform phase values are accepted, but this function is not a
-    general nonuniform Fourier inversion.
-    """
-
-    array = np.asarray(values)
-    projection_sign = _validate_projection_sign(sign, warn_legacy=True)
-    if array.ndim == 0:
-        raise ValueError("values must have at least one phase axis.")
-    axis = int(phase_axis)
-    if axis < 0:
-        axis += array.ndim
-    if axis < 0 or axis >= array.ndim:
-        raise ValueError(f"phase_axis is out of bounds for values.ndim={array.ndim}: {phase_axis}")
-    if array.shape[axis] != len(phase_vectors):
-        raise ValueError(
-            "values phase_axis length must match len(phase_vectors). "
-            f"Got {array.shape[axis]} and {len(phase_vectors)}."
-        )
-
-    moved = np.moveaxis(array, axis, 0).astype(np.complex128, copy=False)
-    weights = np.asarray(
-        [
-            _phase_projection_weight(phase_vector, target_phase_vector, sign=projection_sign)
-            for phase_vector in phase_vectors
-        ],
-        dtype=np.complex128,
-    )
-    weighted = moved * weights.reshape((-1,) + (1,) * (moved.ndim - 1))
-    projected = np.sum(weighted, axis=0)
-    if normalize:
-        projected = projected / float(len(phase_vectors))
-    return projected
-
-
 @dataclass(frozen=True)
 class PhaseProjectionSpec:
-    """指定 phase projection 作用在哪个 single-run readout array 上。"""
+    """Legacy runner configuration for one embedded-readout quantity."""
 
     quantity: str
     phase_axis: int = 0
@@ -326,7 +88,7 @@ def extract_single_run_quantity(
     result: SingleRunResult,
     quantity: str,
 ) -> np.ndarray:
-    """从 `SingleRunResult` 提取可投影 readout array。"""
+    """Legacy runner adapter extracting an array from `SingleRunResult`."""
 
     if not isinstance(result, SingleRunResult):
         raise TypeError("result must be a SingleRunResult instance.")
@@ -367,7 +129,7 @@ def extract_single_run_quantity(
 
 @dataclass(frozen=True)
 class AxisMetadataSpec:
-    """描述 projected-result bundle 中的非投影 axis metadata。"""
+    """Legacy projected-bundle axis extraction configuration."""
 
     name: str
     quantity: str
@@ -413,7 +175,7 @@ class AxisMetadataSpec:
 
 @dataclass
 class ProjectedReadoutBundle:
-    """Fourier-projected signal 与非投影 axis metadata 的通用打包结果。"""
+    """Legacy readout-specific projected result retained through M4."""
 
     signal_name: str
     signal_quantity: str
@@ -465,7 +227,7 @@ class ProjectedReadoutBundle:
 
 @dataclass
 class PhaseCaseRecord:
-    """单个 phase case 的执行记录。"""
+    """Legacy heavy-runner provenance for one executed phase case."""
 
     index: int
     case_name: str
@@ -490,7 +252,7 @@ class PhaseCaseRecord:
 
 @dataclass
 class PhaseCyclingResult:
-    """generic phase-cycling runner 的结构化结果。"""
+    """Legacy heavy-runner result retained for compatibility."""
 
     base_case_name: str
     phase_grid: PhaseGrid
@@ -529,7 +291,7 @@ class PhaseCyclingResult:
 
 @dataclass
 class PhaseCyclingPlan:
-    """基于任意 `SingleRunPlan` 的 generic phase-grid runner。"""
+    """Legacy orchestration that executes `SingleRunPlan` over a phase grid."""
 
     base_plan: SingleRunPlan
     phase_grid: PhaseGrid
@@ -618,8 +380,8 @@ class PhaseCyclingPlan:
         *,
         executor: Callable[[SingleRunPlan], SingleRunResult] | None = None,
     ) -> PhaseCyclingResult:
-        # Temporary M2 compatibility: this heavy runner still projects embedded
-        # readout and is intentionally not simplified until Milestone 4.
+        # Compatibility path: canonical M4 callers project precomputed arrays
+        # with project_phase_orders and do not execute this heavy runner.
         run_one = (lambda plan: plan.execute_with_legacy_readout()) if executor is None else executor
         phase_vectors = self.phase_vectors()
         arrays: list[np.ndarray] = []
@@ -792,6 +554,7 @@ __all__ = [
     "phase_projection_weight",
     "phase_projection_convention_metadata",
     "fourier_project_phase_cases",
+    "project_phase_orders",
     "build_uniform_phase_grid",
     "extract_single_run_quantity",
     "build_projected_readout_bundle",

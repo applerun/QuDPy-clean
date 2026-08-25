@@ -20,18 +20,19 @@
 - canonical `SingleRunPlan.execute()` 已止于 dynamics；独立 `ReadoutPlan` 已负责
   polarization-to-observable 计算。`ReadoutSpec`、`SingleRunResult.readout` 与
   `execute_with_legacy_readout()` 仅作为 temporary compatibility path 保留；
-- 当前 heavy `PhaseCyclingPlan` 会生成 case、执行 solver/readout 并做投影；
-- 当前 TA phase-cycling scaffold 在 recipe-specific postprocess 之前投影
-  pump-probe readout；
-- 当前一个 `PhaseCyclingPlan` 只接受一个 target，多个 target 会导致昂贵
-  计算被重复编排；
+- canonical `project_phase_orders` 已是只接受 precomputed ndarray/named axes 的
+  pure mathematical API，并支持一次请求多个 targets；
+- heavy `PhaseCyclingPlan` 仍会生成 case、执行 legacy embedded readout，并只接受
+  一个 target，但它只作为 compatibility orchestration 保留，不再是推荐路径；
+- 旧 TA phase-cycling scaffold 仍在 recipe-specific postprocess 之前投影
+  pump-probe readout；canonical M3+M4 TA 路径不再经过该 scaffold；
 - 当前存在 `ProjectedReadoutBundle`、`TAPhaseCycledPumpProbeResult` 等目标中
   将废弃的 wrapper；
 - 当前部分 API 使用 `absorption` 表示
   `omega * Im[P(omega) / E(omega)]`，它不是 detector intensity。
 
-剩余项目均是已知 mismatch，不是本文档遗漏。Milestone 0 只冻结语言和目标边界；
-Milestone 1/2 已分别迁移 Fourier convention 与 readout ownership。
+剩余项目均是已知 mismatch，不是本文档遗漏。Milestone 1-4 已分别迁移 Fourier
+convention、readout ownership、TA recipe postprocess 与 pure projection。
 
 ## 核心原则
 
@@ -373,6 +374,42 @@ phase axes、recipe-coordinate axes 和 payload axes 都必须在 `axis_names` �
 一份 `S(phi)` 必须原生支持多个 targets：昂贵的 solver、readout 和 Recipe
 postprocess 各执行一次，只重复廉价 Fourier projection。
 
+Milestone 4 的 canonical public API 是：
+
+```python
+project_phase_orders(
+    data,
+    *,
+    axis_names,
+    axis_values,
+    phase_grid,
+    targets,
+    phase_axes=None,
+    normalize=True,
+)
+```
+
+默认 mapping 为 `phase_tag -> "phase:<tag>"`；只有使用其他 axis name 时才显式
+提供 `phase_axes`。`PhaseGrid` 是 phase sampling 的 authoritative definition，
+`axis_values` 中对应 phase axis 必须与它一致。返回普通 mapping：
+
+```text
+projected[target_name] -> ndarray
+axis_names             -> remaining non-phase axes
+axis_values            -> available remaining coordinates
+targets                -> normalized complete physical order vectors
+metadata               -> convention, normalization, grid, phase-axis mapping
+```
+
+实现先按 `PhaseGrid.tags` 找到并移动 phase axes，再 flatten Cartesian phase cases，
+最后对每个 target 调用唯一权威的 `fourier_project_phase_cases` equal-weight core。
+所有 phase axes 被移除，非 phase axes 的相对顺序保持不变。不同 phase tags 可使用
+不同 `N_j`；`build_uniform_phase_grid(..., n_steps={tag: N_j})` 是 convenience API。
+
+arbitrary finite phase values 仍可执行 equal-weight sum，但这不代表 general
+nonuniform Fourier inversion、NUFFT 或 least-squares harmonic fitting。uniform N-step
+grid 上 alias-equivalent orders `m` 与 `m+qN` 被允许并产生相同离散结果。
+
 ## Persistence
 
 一次 Recipe execution 应保存：
@@ -398,8 +435,9 @@ Recipe postprocess 重建。projected output 至少保存：
 | Current abstraction | Target status | Reason |
 | --- | --- | --- |
 | `PhaseGrid` | keep | 有独立 phase-domain semantics 与 validation |
-| heavy `PhaseCyclingPlan` | target-to-remove | 不应执行 case generation、solver、readout、postprocess 或 aggregation |
-| `PhaseProjectionSpec` | target-to-remove | plain projection function 可直接接受 data/axes/grid/targets/normalization |
+| `project_phase_orders` | keep | M4 canonical pure named-axis, multiple-target projection API |
+| heavy `PhaseCyclingPlan` | compatibility; target-to-remove | canonical path 不再需要；当前仍服务旧 examples/tests |
+| `PhaseProjectionSpec` | compatibility; target-to-remove | canonical API 直接接受 data/axes/grid/targets/normalization |
 | `PhaseCaseRecord` | move/remove from projection layer | execution provenance 属于 Recipe/execution manifest |
 | heavy `PhaseCyclingResult` | simplify/remove if unnecessary | projected ndarray(s) 加最小 metadata 即可 |
 | `AxisMetadataSpec` | candidate for simplification/removal | 当前与 ndarray dimension 绑定不足且依赖 SingleRun quantity extraction |
@@ -426,8 +464,10 @@ Milestone 0 不删除、rename 或改变以上任何 runtime object。
 - **Milestone 3 completed:** `TAPrePCRecipe` 先复用 dynamics，再执行独立 readout，
   最后由 `postprocess` 构造 named-axis pre-PC `S(...)`；pump-off 只按真实 probe
   phase dependency 执行并在 `T`/pump-phase 方向 broadcast。
-- **Milestone 4 deferred:** pure array projection API、multiple targets 与 heavy
-  `PhaseCyclingPlan` removal 尚未开始。
+- **Milestone 4 completed:** `project_phase_orders` 已实现 pure named-axis projection、
+  unequal `N_j` 与 multiple targets；canonical path 不再依赖 heavy `PhaseCyclingPlan`。
+- **Milestone 5 deferred:** projected/result wrappers 与 persistence cleanup 尚未开始。
+- **Milestone 6 deferred:** TA phase-step scientific convergence 与 legacy cleanup 尚未开始。
 - **Later cleanup milestone:** 数值/物理验证和 example/test migration 后，才标记
   heavy runner、bundle 和 TA projected wrappers deprecated，随后删除。
 - **Separate system milestone:** 修复 `NLevelSystem.initial_state` 与 transition

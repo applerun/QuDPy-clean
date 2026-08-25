@@ -9,24 +9,27 @@ from qudpy_sjh.experiments.readout import (
     resolve_readout_field,
 )
 
-from .phase_cycling import (
-    AxisMetadataSpec,
+from .phase_projection import (
     PHASE_PROJECTION_CONVENTION,
     PHASE_PROJECTION_CONVENTION_VERSION,
     TARGET_PHASE_VECTOR_SEMANTICS,
-    PhaseCaseRecord,
-    PhaseCyclingPlan,
-    PhaseCyclingResult,
     PhaseGrid,
-    PhaseProjectionSpec,
-    ProjectedReadoutBundle,
-    build_projected_readout_bundle,
     build_uniform_phase_grid,
-    extract_single_run_quantity,
     fourier_project_phase_cases,
     normalize_target_phase_vector,
     phase_projection_convention_metadata,
     phase_projection_weight,
+    project_phase_orders,
+)
+from .phase_cycling import (
+    AxisMetadataSpec,
+    PhaseCaseRecord,
+    PhaseCyclingPlan,
+    PhaseCyclingResult,
+    PhaseProjectionSpec,
+    ProjectedReadoutBundle,
+    build_projected_readout_bundle,
+    extract_single_run_quantity,
 )
 from .pulse_sequence import (
     FieldGroupSpec,
@@ -83,6 +86,7 @@ __all__ = [
     "normalize_target_phase_vector",
     "phase_projection_convention_metadata",
     "phase_projection_weight",
+    "project_phase_orders",
     "resolve_readout_field",
     "supports_phase_override",
     "validate_phase_tag",

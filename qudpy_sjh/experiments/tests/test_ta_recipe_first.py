@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 from qutip import Qobj
 
-from qudpy_sjh.experiments import ReadoutPlan, ReadoutResult
+from qudpy_sjh.experiments import ReadoutPlan, ReadoutResult, project_phase_orders
 from qudpy_sjh.experiments.pulse_sequence import PhaseGrid, PulseSpec, SingleRunResult
 from qudpy_sjh.experiments.ta import (
     TAPrePCRecipe,
@@ -284,6 +284,50 @@ class TARecipePostprocessTests(unittest.TestCase):
         np.testing.assert_allclose(result.data[0, 0, 0], legacy.delta_absorption)
         self.assertEqual(result.quantity, "delta_absorption_like")
         self.assertIn("not detector-level", result.metadata["condition_formula"])
+
+    def test_pre_pc_observable_feeds_generic_phase_projector(self):
+        grid = PhaseGrid(
+            {
+                "pump": tuple(2.0 * math.pi * index / 4 for index in range(4)),
+                "probe": tuple(2.0 * math.pi * index / 3 for index in range(3)),
+            }
+        )
+        recipe = _recipe(delays_fs=(0.0,), phase_grid=grid)
+        off = np.asarray([2.0, 4.0])
+        pump_off = {
+            (probe_index,): _synthetic_readout(
+                off, mode="full", key="detector_intensity"
+            )
+            for probe_index in range(3)
+        }
+        pump_on = {}
+        for pump_index in range(4):
+            for probe_index, probe_phase in enumerate(grid.phases_by_tag["probe"]):
+                signal = math.cos(probe_phase)
+                pump_on[(0, pump_index, probe_index)] = _synthetic_readout(
+                    off * (1.0 + signal),
+                    mode="full",
+                    key="detector_intensity",
+                )
+        pre_pc = recipe.postprocess(
+            {
+                "pump_on": pump_on,
+                "pump_off": pump_off,
+                "readout_plan": recipe.readout_plan,
+            }
+        )
+
+        projected = project_phase_orders(
+            pre_pc.data,
+            axis_names=pre_pc.axis_names,
+            axis_values=pre_pc.axis_values,
+            phase_grid=recipe.phase_grid,
+            targets={"S_0_1": {"pump": 0, "probe": 1}},
+        )
+
+        self.assertEqual(projected["axis_names"], ("T", "energy_eV"))
+        self.assertEqual(projected["projected"]["S_0_1"].shape, (1, 2))
+        np.testing.assert_allclose(projected["projected"]["S_0_1"], 0.5, atol=1.0e-12)
 
 
 class TARecipeReadoutIntegrationTests(unittest.TestCase):
