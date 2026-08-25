@@ -1,8 +1,7 @@
 """Recipe-first transient-absorption workflow before phase projection.
 
-This module deliberately stops at the complete TA observable ``S(...)``.  It
-does not execute generic phase projection, simplify ``PhaseCyclingPlan``, or
-define a generic Recipe/Condition framework.
+This module deliberately stops at the complete TA observable ``S(...)`` and
+does not execute generic phase projection.
 """
 
 from __future__ import annotations
@@ -21,15 +20,14 @@ from qudpy_sjh.experiments.pulse_sequence import (
     SingleRunFieldPlan,
     SingleRunPlan,
     SingleRunResult,
-    normalize_target_phase_vector,
     validate_pulse_name,
 )
+from qudpy_sjh.experiments.pulse_sequence.phase_projection import normalize_target_phase_vector
 from qudpy_sjh.experiments.readout import (
     ReadoutPlan,
     ReadoutResult,
     compute_polarization_result,
 )
-from qudpy_sjh.experiments.ta.ta_recipe_v2 import TADelayCenters
 from qudpy_sjh.utils.core import NLevelPhysicalParams, ParaNormalizer
 from qudpy_sjh.utils.serialization import json_safe
 
@@ -48,6 +46,39 @@ def _validate_axis(reference: np.ndarray, current: np.ndarray, *, name: str) -> 
     right = np.asarray(current)
     if left.shape != right.shape or not np.allclose(left, right, rtol=0.0, atol=1.0e-12):
         raise ValueError(f"Readout axis {name!r} differs between TA condition cases.")
+
+
+@dataclass(frozen=True)
+class TADelayCenters:
+    """Map TA delay to physical pulse centers.
+
+    ``delay_fs = probe_center_fs - pump_center_fs``; positive delay means the
+    pump arrives before the probe.
+    """
+
+    delay_fs: float
+    probe_center_fs: float = 0.0
+
+    def __post_init__(self) -> None:
+        delay = float(self.delay_fs)
+        probe_center = float(self.probe_center_fs)
+        if not np.isfinite(delay) or not np.isfinite(probe_center):
+            raise ValueError("delay_fs and probe_center_fs must be finite.")
+        object.__setattr__(self, "delay_fs", delay)
+        object.__setattr__(self, "probe_center_fs", probe_center)
+
+    @property
+    def pump_center_fs(self) -> float:
+        return float(self.probe_center_fs - self.delay_fs)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "class": self.__class__.__name__,
+            "delay_fs": float(self.delay_fs),
+            "probe_center_fs": float(self.probe_center_fs),
+            "pump_center_fs": float(self.pump_center_fs),
+            "delay_convention": "delay_fs = probe_center_fs - pump_center_fs; positive delay means pump before probe",
+        }
 
 
 @dataclass
@@ -633,6 +664,7 @@ def build_ta_pre_pc_observable(
 
 
 __all__ = [
+    "TADelayCenters",
     "TAPrePCObservable",
     "TAPrePCRecipe",
     "build_ta_pre_pc_observable",

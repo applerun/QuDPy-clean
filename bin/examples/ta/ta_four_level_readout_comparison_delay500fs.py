@@ -27,7 +27,11 @@ if __package__ is None or __package__ == "":
 	# 脚本可直接从仓库根目录外运行。
 	sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from qudpy_sjh.experiments import phase_projection_convention_metadata
+from qudpy_sjh.experiments import (
+	PHASE_PROJECTION_CONVENTION,
+	PHASE_PROJECTION_CONVENTION_VERSION,
+	TARGET_PHASE_VECTOR_SEMANTICS,
+)
 from qudpy_sjh.utils.core import (
 	NLevelPhysicalParams,
 	ParaNormalizer,
@@ -376,7 +380,9 @@ def run_demo(config: Config, *, output_dir: Path) -> dict[str, Any]:
 		},
 		"readout_definition": "E_out = E_in + source_field_scale * Re[P(t)]",
 		"phase_projection": {
-			**phase_projection_convention_metadata(),
+			"phase_projection_convention": PHASE_PROJECTION_CONVENTION,
+			"phase_projection_convention_version": PHASE_PROJECTION_CONVENTION_VERSION,
+			"target_phase_vector_semantics": TARGET_PHASE_VECTOR_SEMANTICS,
 			"target_phase_vector": {"pump": 0, "probe": 1},
 			"normalize": True,
 		},

@@ -119,51 +119,34 @@ pump_center = probe_center - delay_fs
 
 不要把 delay convention 隐式塞进 core field 类。
 
-## 当前 TA demo 的 field 构造模式
+## 当前 TA workflow
 
-当前 `bin/examples/ta/ta_three_level_intrinsic_response_phase_cycling_demo.py` 的基本模式是：
+当前 canonical example 是
+`bin/examples/ta/ta_three_level_canonical_phase_step_convergence.py`：
 
 ```python
-from qudpy_sjh.utils.fields import FieldPhySeries
-from qudpy_sjh.utils.fields.carrier_envelope import (
-    make_gaussian_carrier_envelope_field,
+recipe = TAPrePCRecipe(
+    base_params=base_params,
+    pump=pump,
+    probe=probe,
+    delays_fs=delays_fs,
+    phase_grid=phase_grid,
+    readout_plan=ReadoutPlan(...),
 )
-
-probe_field = make_gaussian_carrier_envelope_field(
-    E0_MV_per_cm=config.probe_E0_MV_per_cm,
-    laser_energy_eV=config.probe_laser_energy_eV,
-    center_fs=config.probe_center_fs,
-    sigma_fs=config.probe_sigma_fs,
-    phase_rad=config.probe_phase_rad,
-    name="probe",
-)
-
-pump = make_gaussian_carrier_envelope_field(
-    E0_MV_per_cm=config.pump_E0_MV_per_cm,
-    laser_energy_eV=config.pump_laser_energy_eV,
-    center_fs=pump_center,
-    sigma_fs=config.pump_sigma_fs,
-    phase_rad=pump_phase_rad,
-    name="pump",
-)
-
-probe = make_gaussian_carrier_envelope_field(
-    E0_MV_per_cm=config.probe_E0_MV_per_cm,
-    laser_energy_eV=config.probe_laser_energy_eV,
-    center_fs=probe_center,
-    sigma_fs=config.probe_sigma_fs,
-    phase_rad=config.probe_phase_rad,
-    name="probe",
-)
-
-field = FieldPhySeries(
-    fields=(pump, probe),
-    sub_field_names=("pump", "probe"),
-    name=case_name,
+dynamics = recipe.execute_dynamics()
+readouts = recipe.apply_readout(dynamics)
+observable = recipe.postprocess(readouts)
+projected = project_phase_orders(
+    observable.data,
+    axis_names=observable.axis_names,
+    axis_values=observable.axis_values,
+    phase_grid=phase_grid,
+    targets=targets,
 )
 ```
 
-`probe_field` 用于 probe-only reference 和 response 分母中的 `E_probe(t)`；`field` 用于 pump+probe run。
+Pulse templates、phase tags 与 centers 由 recipe 映射为 concrete physical fields。
+不在脚本中维护第二套 phase-case runner。
 
 ## probe-only reference
 
@@ -176,7 +159,8 @@ probe envelope 固定
 pump_center_fs 随 delay 移动
 ```
 
-因此 probe-only reference 可以只运行一次，并在多个 delay 和多个 pump phase case 中复用。
+因此 probe-only reference 可按真实 probe-phase dependency 运行一次，并在多个 delay
+和多个 pump phase case 中复用。
 
 复用前应确保：
 
@@ -191,65 +175,22 @@ E_probe(omega) 一致
 
 phase cycling 是 workflow 层逻辑，不属于 field core。
 
-当前 demo 的 pump phase cases 是：
+`PhaseGrid` 可定义任意 N、任意 finite phase values 和多个 phase tags；
+`project_phase_orders` 对 recipe 产生的完整 `S(phi)` 执行统一的 `+i` Fourier
+projection。不要为 phase cycling 新增特殊 `DynamicsResult` 类型，也不要把 phase
+average 写回 solver core。
+
+Detector-level TA 由 recipe postprocess 定义为：
 
 ```text
-0
-pi/2
-pi
-3pi/2
+delta_T_over_T = (I_on - I_off) / I_off
 ```
 
-每个 phase case 独立运行 delay scan，得到一张 TA map。phase average 在 workflow 层计算：
+absorption-like 分析则显式命名为：
 
 ```text
-TA_phase_avg = mean(TA_phase_cases, axis=0)
+delta_absorption_like = A_on - A_off
 ```
-
-不要为 phase cycling 新增特殊 `DynamicsResult` 类型，也不要把 phase average 写回 solver core。
-
-## TA intrinsic response
-
-当前 workflow 的 differential response 是：
-
-```text
-for each pump phase:
-    for each delay:
-        construct pump+probe FieldPhySeries
-        run pump+probe full-window case
-        compute P_pump_probe(t)
-        compute absorption with E_probe(t)
-        subtract the reused probe-only absorption
-```
-
-概念公式：
-
-```text
-S_TA(omega, delay)
-=
-omega * Im[P_pump_probe(omega, delay) / E_probe(omega)]
--
-omega * Im[P_probe_only(omega) / E_probe(omega)]
-```
-
-其中：
-
-```text
-P(t) = number_density * Tr[rho(t) mu]
-E_probe(t) = probe_field(t_fs)
-```
-
-该 response 是模拟层的材料本征响应，不包含：
-
-```text
-传播效应
-样品厚度
-transmitted intensity
-detector response
-实验仪器响应
-```
-
-这些实验链路因素不属于当前 QuDPy 主线。
 
 ## spectroscopy workflow
 

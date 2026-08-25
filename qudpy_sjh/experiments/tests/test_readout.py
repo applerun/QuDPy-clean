@@ -17,10 +17,8 @@ from qudpy_sjh.experiments import (
 from qudpy_sjh.experiments.pulse_sequence import (
     PulseSequenceSpec,
     PulseSpec,
-    ReadoutSpec,
     SingleRunFieldPlan,
     SingleRunPlan,
-    compute_single_run_readout,
 )
 from qudpy_sjh.utils.core import DynamicsResult, NLevelPhysicalParams, ParaNormalizer
 from qudpy_sjh.utils.fields import FieldPhySeries
@@ -125,21 +123,10 @@ class CoherentDetectorAlgebraTests(unittest.TestCase):
 
 
 class ReadoutPlanTests(unittest.TestCase):
-    def test_legacy_absorption_parity_and_named_interaction_field(self):
+    def test_absorption_like_uses_canonical_key_and_named_interaction_field(self):
         params = _base_params()
         params = replace(params, field=_field_plan().build_field())
         dynamics = _dynamics(params)
-        legacy_spec = ReadoutSpec(
-            mode="absorption",
-            readout_field_name="probe",
-            window="hann",
-            subtract_mean=True,
-            rel_threshold=1.0e-8,
-            zero_padding_factor=2,
-            return_intermediates=True,
-        )
-
-        legacy = compute_single_run_readout(dynamics, readout=legacy_spec)
         polarization = compute_polarization_result(dynamics, number_density_m3=1.0e24)
         canonical = ReadoutPlan(
             mode="absorption_like",
@@ -151,21 +138,18 @@ class ReadoutPlanTests(unittest.TestCase):
             return_intermediates=True,
         ).execute(polarization, interaction_field=params.field)
 
-        self.assertIsNotNone(legacy)
-        assert legacy is not None and legacy.spectrum is not None and canonical.spectrum is not None
-        self.assertEqual(legacy.mode, "absorption")
+        assert canonical.spectrum is not None
         self.assertEqual(canonical.mode, "absorption_like")
         self.assertIn("absorption_like_response", canonical.spectrum)
+        self.assertNotIn("absorption", canonical.spectrum)
         self.assertEqual(canonical.metadata["readout_field_source"], "interaction_subfield:probe")
-        for key in ("energy_eV", "omega_fs_inv", "absorption", "P_omega", "E_omega", "P_over_E"):
-            np.testing.assert_allclose(legacy.spectrum[key], canonical.spectrum[key], equal_nan=True)
-        np.testing.assert_allclose(legacy.readout_field_MV_per_cm, canonical.readout_field_MV_per_cm)
+        for key in ("energy_eV", "omega_fs_inv", "P_omega", "E_omega", "P_over_E"):
+            self.assertIn(key, canonical.spectrum)
 
     def test_one_dynamics_execution_supports_multiple_external_readouts(self):
         plan = SingleRunPlan(
             base_params=_base_params(),
             field_plan=_field_plan(),
-            readout=ReadoutSpec(mode="absorption", readout_field_name="probe"),
         )
         captured_fields: list[FieldPhySeries] = []
 
@@ -198,7 +182,6 @@ class ReadoutPlanTests(unittest.TestCase):
             ).execute(polarization, interaction_field=execution.params.field)
 
         self.assertEqual(solver.call_count, 1)
-        self.assertIsNone(execution.readout)
         self.assertEqual(captured_fields[0].sub_field_names, ("pump", "probe"))
         self.assertNotIn(external, captured_fields[0].fields)
         np.testing.assert_allclose(execution.dynamics_result.density_array(), density_before)
@@ -207,46 +190,6 @@ class ReadoutPlanTests(unittest.TestCase):
             np.allclose(full.spectrum["detector_intensity"], weak.spectrum["detector_intensity"])
         )
         self.assertEqual(full.metadata["readout_field_source"], "external_field")
-
-    def test_legacy_single_run_adapter_matches_explicit_canonical_readout(self):
-        legacy_spec = ReadoutSpec(
-            mode="absorption",
-            readout_field_name="probe",
-            rel_threshold=1.0e-8,
-            zero_padding_factor=2,
-        )
-        plan = SingleRunPlan(
-            base_params=_base_params(),
-            field_plan=_field_plan(),
-            readout=legacy_spec,
-        )
-
-        with patch(
-            "qudpy_sjh.experiments.pulse_sequence.single_run.run_case",
-            side_effect=lambda params, **_kwargs: _dynamics(params),
-        ) as solver:
-            compatibility = plan.execute_with_legacy_readout()
-
-        self.assertEqual(solver.call_count, 1)
-        self.assertIsNotNone(compatibility.readout)
-        assert compatibility.readout is not None and compatibility.readout.spectrum is not None
-        polarization = compute_polarization_result(
-            compatibility.dynamics_result,
-            number_density_m3=legacy_spec.number_density_m3,
-        )
-        canonical = ReadoutPlan(
-            mode="absorption_like",
-            readout_field="probe",
-            rel_threshold=legacy_spec.rel_threshold,
-            zero_padding_factor=legacy_spec.zero_padding_factor,
-        ).execute(polarization, interaction_field=compatibility.params.field)
-        assert canonical.spectrum is not None
-        np.testing.assert_allclose(
-            compatibility.readout.spectrum["absorption"],
-            canonical.spectrum["absorption_like_response"],
-            equal_nan=True,
-        )
-        self.assertTrue(compatibility.metadata["readout_compatibility"]["temporary"])
 
     def test_fixed_external_readout_phase_changes_interference_not_phase_dimensions(self):
         dynamics = _dynamics(_base_params())

@@ -4,7 +4,7 @@ This script is a diagnostic workflow, not a new spectroscopy implementation.
 
 It deliberately reuses existing QuDPy APIs:
     - NLevelPhysicalParams / RelaxationChannel / PureDephasingChannel
-    - make_default_gaussian_carrier_field
+    - make_gaussian_carrier_envelope_field
     - run_case
     - polarization_C_per_m2
     - lab_frame_fft_response
@@ -46,7 +46,7 @@ from qudpy_sjh.utils.core import (
     RelaxationChannel,
     run_case,
 )
-from qudpy_sjh.utils.fields import make_default_gaussian_carrier_field
+from qudpy_sjh.utils.fields.carrier_envelope import make_gaussian_carrier_envelope_field
 from qudpy_sjh.utils.serialization import write_json
 from qudpy_sjh.utils.spectroscopy import lab_frame_fft_response_legacy, polarization_C_per_m2
 
@@ -80,11 +80,11 @@ def _write_rows(path: Path, rows: list[dict[str, Any]]) -> None:
 def _make_probe_field():
     """Construct a weak broadband Gaussian lab-frame probe field."""
 
-    return make_default_gaussian_carrier_field(
+    return make_gaussian_carrier_envelope_field(
         E0_MV_per_cm=0.005,
         laser_energy_eV=1.60,
-        pulse_center_fs=0.0,
-        pulse_sigma_fs=8.0,
+        center_fs=0.0,
+        sigma_fs=8.0,
         phase_rad=0.0,
         name="weak_broadband_probe",
         metadata={

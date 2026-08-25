@@ -9,6 +9,7 @@ __pycache__/
 
 # generated data / figures
 outputs/
+/bin/optical_bloch_plots/
 figures/
 figs/
 io_preview/

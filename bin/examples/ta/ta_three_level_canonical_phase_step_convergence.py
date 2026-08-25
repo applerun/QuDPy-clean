@@ -75,7 +75,7 @@ def build_system():
         initial_state="ground",
         name="canonical_three_level_ta_validation",
         metadata={
-            "baseline": "ta_three_level_phase_cycling_v2_legacy_output_system_maker.py",
+            "baseline": "M6 frozen three-level validation parameters",
             "scope": "M6 phase-step convergence",
         },
     )
@@ -514,7 +514,7 @@ def save_validation_outputs(
         output_dir / "metadata.json",
         {
             "example": "ta_three_level_canonical_phase_step_convergence",
-            "baseline": "ta_three_level_phase_cycling_v2_legacy_output_system_maker.py",
+            "baseline": "M6 frozen three-level validation parameters",
             "system": build_system().to_dict(include_arrays=True),
             "pulse_parameters": {
                 "pump": {"E0_MV_per_cm": 0.30, "energy_eV": 1.55, "sigma_fs": 12.0},

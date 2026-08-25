@@ -19,10 +19,9 @@ from qudpy_sjh.experiments import (
 from qudpy_sjh.experiments.pulse_sequence import PhaseGrid, PulseSpec, SingleRunResult
 from qudpy_sjh.experiments.ta import (
     TAPrePCRecipe,
-    TAReadoutBundle,
     build_ta_pre_pc_observable,
-    compute_ta_contrast,
 )
+from qudpy_sjh.systems import NLevelSystem, make_base_physical_params_from_system
 from qudpy_sjh.utils.core import DynamicsResult, NLevelPhysicalParams
 from qudpy_sjh.utils.fields.carrier_envelope import make_constant_carrier_envelope_field
 
@@ -258,7 +257,7 @@ class TARecipePostprocessTests(unittest.TestCase):
         self.assertEqual(result.metadata["denominator_policy"]["invalid_count"], 2)
         self.assertIsNotNone(result.metadata["denominator_policy"]["warning"])
 
-    def test_absorption_compatibility_matches_legacy_subtraction(self):
+    def test_absorption_like_difference_uses_explicit_condition_subtraction(self):
         recipe = _recipe(
             readout_mode="absorption_like",
             observable="delta_absorption_like",
@@ -283,13 +282,7 @@ class TARecipePostprocessTests(unittest.TestCase):
                 "readout_plan": recipe.readout_plan,
             }
         )
-        legacy = compute_ta_contrast(
-            TAReadoutBundle(case_name="on", absorption=on, energy_eV=energy),
-            TAReadoutBundle(case_name="off", absorption=off, energy_eV=energy),
-            delay_fs=7.0,
-        )
-
-        np.testing.assert_allclose(result.data[0, 0, 0], legacy.delta_absorption)
+        np.testing.assert_allclose(result.data[0, 0, 0], on - off)
         self.assertEqual(result.quantity, "delta_absorption_like")
         self.assertIn("not detector-level", result.metadata["condition_formula"])
 
@@ -403,6 +396,62 @@ class TARecipeReadoutIntegrationTests(unittest.TestCase):
         self.assertFalse(np.allclose(full.data, weak.data, equal_nan=True))
         self.assertEqual(full.metadata["solver_case_counts"]["total"], 15)
         self.assertEqual(weak.metadata["solver_case_counts"]["total"], 15)
+
+
+class CanonicalEndToEndSmokeTests(unittest.TestCase):
+    def test_system_recipe_projection_and_persistence(self):
+        system = NLevelSystem(
+            name="m7_smoke_system",
+            basis=("g", "e"),
+            energies_eV=np.asarray([0.0, 1.55]),
+            dipole_matrix_D=np.asarray([[0.0, 1.0], [1.0, 0.0]]),
+        )
+        base_params = make_base_physical_params_from_system(
+            system,
+            field=_field("base_probe", amplitude=0.01),
+            t_start_fs=0.0,
+            t_end_fs=8.0,
+            dt_fs=0.25,
+        )
+        grid = PhaseGrid({"pump": (0.0, math.pi)})
+        recipe = TAPrePCRecipe(
+            base_params=base_params,
+            pump=_pulse("pump", amplitude=0.02),
+            probe=_pulse("probe", amplitude=0.01),
+            delays_fs=(0.0,),
+            phase_grid=grid,
+            readout_plan=ReadoutPlan(
+                mode="absorption_like",
+                readout_field="probe",
+                zero_padding_factor=1,
+            ),
+            observable="delta_absorption_like",
+            target_phase_vector={"pump": 0},
+            case_name="m7_end_to_end",
+        )
+
+        observable = recipe.execute()
+        projected = project_phase_orders(
+            observable.data,
+            axis_names=observable.axis_names,
+            axis_values=observable.axis_values,
+            phase_grid=grid,
+            targets={"S_0": {"pump": 0}},
+        )
+        base = Path.cwd() / f".tmp_m7_projected_{uuid4().hex}"
+        npz_path = Path(f"{base}.npz")
+        json_path = Path(f"{base}.json")
+        self.addCleanup(npz_path.unlink, missing_ok=True)
+        self.addCleanup(json_path.unlink, missing_ok=True)
+        save_projected_result(projected, base)
+        loaded = load_projected_result(base)
+
+        self.assertEqual(loaded["axis_names"], ("T", "energy_eV"))
+        np.testing.assert_allclose(
+            loaded["projected"]["S_0"],
+            projected["projected"]["S_0"],
+            equal_nan=True,
+        )
 
 
 if __name__ == "__main__":

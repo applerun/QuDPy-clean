@@ -4,69 +4,37 @@ import unittest
 
 import qudpy_sjh.experiments.ta as ta_package
 from qudpy_sjh.experiments.ta import (
-    LegacyTADelayScanPlan,
-    LegacyTAPlan,
-    LegacyTAResult,
-    LegacyTAResultIO,
-    LegacyTASettings,
-    TADelayScanPlan,
-    TADelayScanPlanV2,
+    TADelayCenters,
     TAPrePCObservable,
     TAPrePCRecipe,
     build_ta_pre_pc_observable,
 )
-from qudpy_sjh.experiments.ta.ta_case_plan import TADelayScanPlan as LegacyModuleDelayScanPlan
-from qudpy_sjh.experiments.ta.ta_case_plan import TAPlan as LegacyModuleTAPlan
-from qudpy_sjh.experiments.ta.ta_recipe_v2 import TADelayScanPlan as RecipeV2DelayScanPlan
-from qudpy_sjh.experiments.ta.ta_recipe_first import (
-    TAPrePCObservable as DirectTAPrePCObservable,
-    TAPrePCRecipe as DirectTAPrePCRecipe,
-    build_ta_pre_pc_observable as direct_build_ta_pre_pc_observable,
-)
-from qudpy_sjh.experiments.ta.ta_result import TAResult as LegacyModuleTAResult
-from qudpy_sjh.experiments.ta.ta_result import TAResultIO as LegacyModuleTAResultIO
-from qudpy_sjh.experiments.ta.ta_settings import TASettings as LegacyModuleTASettings
 
 
-class TAExportTests(unittest.TestCase):
-    def test_legacy_aliases_point_to_v1_modules(self):
-        self.assertIs(LegacyTASettings, LegacyModuleTASettings)
-        self.assertIs(LegacyTAPlan, LegacyModuleTAPlan)
-        self.assertIs(LegacyTADelayScanPlan, LegacyModuleDelayScanPlan)
-        self.assertIs(LegacyTAResult, LegacyModuleTAResult)
-        self.assertIs(LegacyTAResultIO, LegacyModuleTAResultIO)
+class CanonicalTAExportTests(unittest.TestCase):
+    def test_public_surface_contains_only_recipe_first_api(self):
+        self.assertEqual(
+            set(ta_package.__all__),
+            {
+                "TADelayCenters",
+                "TAPrePCObservable",
+                "TAPrePCRecipe",
+                "build_ta_pre_pc_observable",
+            },
+        )
+        for value in (
+            TADelayCenters,
+            TAPrePCObservable,
+            TAPrePCRecipe,
+            build_ta_pre_pc_observable,
+        ):
+            self.assertIsNotNone(value)
 
-    def test_v2_scan_alias_points_to_recipe_v2_module(self):
-        self.assertIs(TADelayScanPlanV2, RecipeV2DelayScanPlan)
+    def test_delay_convention(self):
+        centers = TADelayCenters(delay_fs=100.0, probe_center_fs=10.0)
 
-    def test_bare_delay_scan_plan_keeps_legacy_v1_meaning(self):
-        self.assertIs(TADelayScanPlan, LegacyModuleDelayScanPlan)
-        self.assertIsNot(TADelayScanPlan, RecipeV2DelayScanPlan)
-
-    def test_direct_ta_recipe_v2_import_still_exposes_original_class_name(self):
-        from qudpy_sjh.experiments.ta.ta_recipe_v2 import TADelayScanPlan as DirectDelayScanPlan
-
-        self.assertIs(DirectDelayScanPlan, RecipeV2DelayScanPlan)
-
-    def test_recipe_first_api_is_explicitly_exported(self):
-        self.assertIs(TAPrePCObservable, DirectTAPrePCObservable)
-        self.assertIs(TAPrePCRecipe, DirectTAPrePCRecipe)
-        self.assertIs(build_ta_pre_pc_observable, direct_build_ta_pre_pc_observable)
-
-    def test_all_exports_are_unique_and_explicit(self):
-        exported = list(ta_package.__all__)
-
-        self.assertEqual(len(exported), len(set(exported)))
-        self.assertIn("TADelayScanPlan", exported)
-        self.assertIn("LegacyTADelayScanPlan", exported)
-        self.assertIn("TADelayScanPlanV2", exported)
-        self.assertIn("TADelayScanMapV2", exported)
-        self.assertIn("TADelayScanResultV2", exported)
-        self.assertIn("TAPrePCObservable", exported)
-        self.assertIn("TAPrePCRecipe", exported)
-        self.assertIn("build_ta_pre_pc_observable", exported)
-        self.assertNotIn("TADelayScanMap", exported)
-        self.assertNotIn("TADelayScanResult", exported)
+        self.assertEqual(centers.pump_center_fs, -90.0)
+        self.assertEqual(centers.to_dict()["delay_fs"], 100.0)
 
 
 if __name__ == "__main__":

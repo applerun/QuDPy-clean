@@ -53,8 +53,7 @@ class NLevelPhysicalParams:
 
 	该类描述一个 N 能级体系及其外加光场输入。所有普通输入均使用
 	真实物理单位：能量用 eV，偶极矩用 Debye，时间用 fs。输入光场
-	只能由 `field` 对象描述，`NLevelPhysicalParams` 不再构造默认
-	GaussianCarrierFieldPhysical。
+	只能由 `field` 对象描述，`NLevelPhysicalParams` 不负责构造默认光场。
 
 	`dipole_matrix_D` 表示沿选定 optical polarization 投影后的
 	跃迁偶极矩矩阵，单位 Debye。矩阵元素可以为正、负、零或复数。

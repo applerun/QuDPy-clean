@@ -8,7 +8,6 @@ phase sum; that operation is not a general nonuniform Fourier inversion.
 
 from __future__ import annotations
 
-import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from itertools import product
@@ -25,7 +24,6 @@ TargetPhaseVector = dict[str, int]
 PHASE_PROJECTION_CONVENTION = "exp_plus_i_m_phi"
 PHASE_PROJECTION_CONVENTION_VERSION = 1
 TARGET_PHASE_VECTOR_SEMANTICS = "physical_phase_order_vector_m"
-_LEGACY_PHASE_PROJECTION_CONVENTION = "legacy_exp_minus_i_target_phi"
 
 
 def _stable_unique_phase_tags(tags: Sequence[str]) -> tuple[str, ...]:
@@ -185,42 +183,19 @@ def build_uniform_phase_grid(
     )
 
 
-def _validate_projection_sign(sign: int, *, warn_legacy: bool) -> int:
-    if isinstance(sign, (bool, np.bool_)) or sign not in {-1, 1}:
-        raise ValueError("sign must be +1 or -1.")
-    value = int(sign)
-    if warn_legacy and value == -1:
-        warnings.warn(
-            "sign=-1 is a deprecated legacy phase-projection convention. "
-            "Canonical target_phase_vector semantics use exp(+i*m*phi) with sign=+1.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-    return value
+def phase_projection_convention_metadata() -> dict[str, Any]:
+    """Return the frozen canonical Fourier-convention metadata."""
 
-
-def phase_projection_convention_metadata(*, sign: int = 1) -> dict[str, Any]:
-    """Return canonical or temporary legacy convention metadata."""
-
-    value = _validate_projection_sign(sign, warn_legacy=False)
-    if value == 1:
-        return {
-            "phase_projection_convention": PHASE_PROJECTION_CONVENTION,
-            "phase_projection_convention_version": PHASE_PROJECTION_CONVENTION_VERSION,
-            "target_phase_vector_semantics": TARGET_PHASE_VECTOR_SEMANTICS,
-        }
     return {
-        "phase_projection_convention": _LEGACY_PHASE_PROJECTION_CONVENTION,
-        "phase_projection_convention_version": 0,
-        "target_phase_vector_semantics": "legacy_target_interpreted_with_projection_sign",
+        "phase_projection_convention": PHASE_PROJECTION_CONVENTION,
+        "phase_projection_convention_version": PHASE_PROJECTION_CONVENTION_VERSION,
+        "target_phase_vector_semantics": TARGET_PHASE_VECTOR_SEMANTICS,
     }
 
 
 def _phase_projection_weight(
     phase_vector: Mapping[str, float],
     target_phase_vector: Mapping[str, int],
-    *,
-    sign: int,
 ) -> complex:
     phase_sum = 0.0
     for tag, coefficient in target_phase_vector.items():
@@ -230,19 +205,16 @@ def _phase_projection_weight(
         if tag not in phase_vector:
             raise ValueError(f"phase_vector is missing non-zero target tag: {tag!r}")
         phase_sum += float(integer) * float(phase_vector[tag])
-    return complex(np.exp(sign * 1j * phase_sum))
+    return complex(np.exp(1j * phase_sum))
 
 
 def phase_projection_weight(
     phase_vector: Mapping[str, float],
     target_phase_vector: Mapping[str, int],
-    *,
-    sign: int = 1,
 ) -> complex:
     """Return ``exp(+i*m dot phi)`` for one phase case."""
 
-    value = _validate_projection_sign(sign, warn_legacy=True)
-    return _phase_projection_weight(phase_vector, target_phase_vector, sign=value)
+    return _phase_projection_weight(phase_vector, target_phase_vector)
 
 
 def fourier_project_phase_cases(
@@ -252,12 +224,10 @@ def fourier_project_phase_cases(
     *,
     phase_axis: int = 0,
     normalize: bool = True,
-    sign: int = 1,
 ) -> np.ndarray:
     """Authoritative equal-weight Fourier sum over one flattened case axis."""
 
     array = np.asarray(values)
-    projection_sign = _validate_projection_sign(sign, warn_legacy=True)
     if array.ndim == 0:
         raise ValueError("values must have at least one phase axis.")
     axis = int(phase_axis)
@@ -276,7 +246,7 @@ def fourier_project_phase_cases(
     moved = np.moveaxis(array, axis, 0).astype(np.complex128, copy=False)
     weights = np.asarray(
         [
-            _phase_projection_weight(phase_vector, target_phase_vector, sign=projection_sign)
+            _phase_projection_weight(phase_vector, target_phase_vector)
             for phase_vector in phase_vectors
         ],
         dtype=np.complex128,
@@ -441,7 +411,6 @@ def project_phase_orders(
             target,
             phase_axis=0,
             normalize=bool(normalize),
-            sign=1,
         )
         for name, target in normalized_targets.items()
     }
@@ -450,7 +419,7 @@ def project_phase_orders(
         for name in remaining_names
         if name in values
     }
-    convention = phase_projection_convention_metadata(sign=1)
+    convention = phase_projection_convention_metadata()
     return {
         "projected": projected,
         "axis_names": remaining_names,
@@ -481,9 +450,5 @@ __all__ = [
     "TARGET_PHASE_VECTOR_SEMANTICS",
     "PhaseGrid",
     "build_uniform_phase_grid",
-    "fourier_project_phase_cases",
-    "normalize_target_phase_vector",
-    "phase_projection_convention_metadata",
-    "phase_projection_weight",
     "project_phase_orders",
 ]

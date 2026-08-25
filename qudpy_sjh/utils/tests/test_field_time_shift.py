@@ -4,15 +4,19 @@ import unittest
 
 import numpy as np
 
-from qudpy_sjh.utils.fields import FieldPhySeries, TimeShiftedField, make_default_gaussian_carrier_field
+from qudpy_sjh.utils.fields import FieldPhySeries
+from qudpy_sjh.utils.fields.carrier_envelope import (
+    CarrierEnvelopeField,
+    make_gaussian_carrier_envelope_field,
+)
 
 
 def _gaussian(center_fs: float = 0.0):
-    return make_default_gaussian_carrier_field(
+    return make_gaussian_carrier_envelope_field(
         E0_MV_per_cm=1.0,
         laser_energy_eV=0.0,
-        pulse_center_fs=center_fs,
-        pulse_sigma_fs=10.0,
+        center_fs=center_fs,
+        sigma_fs=10.0,
         name="template",
     )
 
@@ -30,7 +34,7 @@ class FieldTimeShiftTests(unittest.TestCase):
         grid = np.linspace(-50.0, 50.0, 101)
 
         np.testing.assert_allclose(shifted(grid), field(grid))
-        self.assertIsInstance(shifted, TimeShiftedField)
+        self.assertIsInstance(shifted, CarrierEnvelopeField)
 
     def test_negative_shift_moves_gaussian_peak_earlier(self):
         shifted = _gaussian().time_shifted(-200.0)
@@ -48,16 +52,19 @@ class FieldTimeShiftTests(unittest.TestCase):
 
         self.assertAlmostEqual(field.to_dict()["center_fs"], 0.0)
         self.assertAlmostEqual(shifted.to_dict()["center_fs"], -200.0)
-        self.assertIs(shifted.base_field, field)
+        self.assertIsNot(shifted, field)
+        self.assertIs(shifted.carrier, field.carrier)
 
-    def test_metadata_records_shift_rule(self):
+    def test_metadata_records_carrier_envelope_shift_semantics(self):
         shifted = _gaussian().time_shifted(-25.0, metadata={"purpose": "test"})
         payload = shifted.to_dict()
 
-        self.assertEqual(payload["time_shift_fs"], -25.0)
         self.assertEqual(payload["metadata"]["time_shift_fs"], -25.0)
         self.assertEqual(payload["metadata"]["purpose"], "test")
-        self.assertIn("E_shifted(t) = E_original(t - shift_fs)", payload["shift_rule"])
+        self.assertEqual(
+            payload["metadata"]["time_shift_semantics"],
+            "envelope center shift under carrier-envelope convention",
+        )
 
     def test_shifted_field_works_inside_field_series(self):
         pump = _gaussian().time_shifted(-20.0, name="pump")

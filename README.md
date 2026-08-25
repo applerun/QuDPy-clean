@@ -242,7 +242,7 @@ python -m compileall qudpy_sjh
 然后运行当前维护的 example，例如：
 
 ```bash
-python bin/examples/ta/ta_three_level_intrinsic_response_phase_cycling_demo.py --quick
+python bin/examples/ta/ta_three_level_canonical_phase_step_convergence.py --quick
 ```
 
 ## 当前不在主线的内容

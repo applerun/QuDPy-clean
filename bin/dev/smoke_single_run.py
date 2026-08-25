@@ -43,7 +43,7 @@ def _require(condition: bool, message: str) -> None:
 
 def _spectrum_points(spectrum: dict[str, np.ndarray]) -> int:
     energy = np.asarray(spectrum.get("energy_eV"))
-    absorption = np.asarray(spectrum.get("absorption"))
+    absorption = np.asarray(spectrum.get("absorption_like_response"))
     _require(energy.size > 0, "spectrum energy_eV must contain at least one point.")
     _require(absorption.size > 0, "spectrum absorption must contain at least one point.")
     _require(energy.shape == absorption.shape, "energy_eV and absorption must have the same shape.")
@@ -131,7 +131,6 @@ def main() -> None:
     hermiticity_error = result.dynamics_result.max_hermiticity_error()
     _require(np.isfinite(trace_error), "max_trace_error must be finite.")
     _require(np.isfinite(hermiticity_error), "max_hermiticity_error must be finite.")
-    _require(result.readout is None, "canonical SingleRunPlan.execute() must stop at dynamics.")
     polarization = compute_polarization_result(
         result.dynamics_result,
         number_density_m3=1.0e24,
@@ -145,7 +144,7 @@ def main() -> None:
     ).execute(polarization, interaction_field=result.params.field)
     _require(readout.spectrum is not None, "absorption-like readout must produce a spectrum.")
     assert readout.spectrum is not None
-    for key in ("energy_eV", "omega_fs_inv", "absorption"):
+    for key in ("energy_eV", "omega_fs_inv", "absorption_like_response"):
         _require(key in readout.spectrum, f"spectrum is missing key: {key}")
 
     n_spectrum_points = _spectrum_points(readout.spectrum)

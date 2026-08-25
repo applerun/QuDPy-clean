@@ -15,21 +15,7 @@ from .phase_projection import (
     TARGET_PHASE_VECTOR_SEMANTICS,
     PhaseGrid,
     build_uniform_phase_grid,
-    fourier_project_phase_cases,
-    normalize_target_phase_vector,
-    phase_projection_convention_metadata,
-    phase_projection_weight,
     project_phase_orders,
-)
-from .phase_cycling import (
-    AxisMetadataSpec,
-    PhaseCaseRecord,
-    PhaseCyclingPlan,
-    PhaseCyclingResult,
-    PhaseProjectionSpec,
-    ProjectedReadoutBundle,
-    build_projected_readout_bundle,
-    extract_single_run_quantity,
 )
 from .pulse_sequence import (
     FieldGroupSpec,
@@ -43,12 +29,9 @@ from .pulse_sequence import (
     validate_pulse_name,
 )
 from .single_run import (
-    ReadoutSpec,
     SingleRunCheckpointSettings,
     SingleRunPlan,
-    SingleRunReadoutResult,
     SingleRunResult,
-    compute_single_run_readout,
 )
 
 __all__ = [
@@ -69,27 +52,11 @@ __all__ = [
     "build_uniform_phase_grid",
     "coherent_detector_terms",
     "compute_polarization_result",
-    "fourier_project_phase_cases",
     "is_supported_phase_backend",
     "normalize_phase_vector",
-    "normalize_target_phase_vector",
-    "phase_projection_convention_metadata",
-    "phase_projection_weight",
     "project_phase_orders",
     "resolve_readout_field",
     "supports_phase_override",
     "validate_phase_tag",
     "validate_pulse_name",
-    # Legacy compatibility exports.
-    "AxisMetadataSpec",
-    "PhaseCaseRecord",
-    "PhaseCyclingPlan",
-    "PhaseCyclingResult",
-    "PhaseProjectionSpec",
-    "ProjectedReadoutBundle",
-    "ReadoutSpec",
-    "SingleRunReadoutResult",
-    "build_projected_readout_bundle",
-    "compute_single_run_readout",
-    "extract_single_run_quantity",
 ]

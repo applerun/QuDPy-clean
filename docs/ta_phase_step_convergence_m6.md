@@ -9,8 +9,7 @@ System -> TAPrePCRecipe -> SimRes -> ReadoutPlan -> deltaT/T
        -> project_phase_orders -> save_projected_result
 ```
 
-It does not use `PhaseCyclingPlan`, `ProjectedReadoutBundle`, or a TA-specific
-projected result wrapper.
+It does not use the historical heavy runner or TA-specific projected wrappers.
 
 ## Setup
 
@@ -80,13 +79,15 @@ The directory contains per-case SimRes checkpoints, per-N projected NPZ/JSON,
 `summary.csv`, `metadata.json`, `spectra.npz`, `N4_fourier_content.csv`, and
 three delay overlays.
 
-## Legacy disposition
+## M7 architecture status
 
-| API/object | Final M6 status | Replacement/reason |
-| --- | --- | --- |
-| `PhaseCyclingPlan`, `PhaseProjectionSpec`, `PhaseCaseRecord`, `PhaseCyclingResult` | legacy-only, retained | Active historical examples/tests still require the heavy runner; canonical code uses Recipe execution plus `project_phase_orders` |
-| `AxisMetadataSpec`, `ProjectedReadoutBundle` | deprecated compatibility | Plain `axis_names`/`axis_values` and lightweight projected mapping |
-| `TAPhaseCyclingSpec`, `TAPhaseCycledPumpProbeResult` | legacy-only/deprecated | `TAPrePCRecipe -> project_phase_orders` |
-| TA v2 phase-plan/bundle builders | deprecated with `DeprecationWarning` | Canonical Recipe and persistence helpers |
-| `ReadoutSpec`, `execute_with_legacy_readout` | compatibility, retained | `ReadoutPlan` applied after dynamics |
-| `TAPrePCObservable` | canonical, retained | Thin TA recipe boundary with denominator mask and diagnostics |
+The historical heavy runner, projected wrappers, TA v1/v2 plans, and embedded
+single-run readout path were removed from the active tree in M7. Git history is
+the compatibility archive. The validated M6 workflow remains:
+
+```text
+TAPrePCRecipe -> TAPrePCObservable -> project_phase_orders
+```
+
+`TAPrePCObservable` remains the thin recipe boundary carrying named axes,
+denominator masks, and diagnostics.

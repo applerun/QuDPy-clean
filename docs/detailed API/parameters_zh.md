@@ -239,18 +239,18 @@ solver_mode="lab_exact"
 ## 最小示例
 
 ```python
-from qudpy_sjh.utils.fields import make_default_gaussian_carrier_field
+from qudpy_sjh.utils.fields.carrier_envelope import make_gaussian_carrier_envelope_field
 from qudpy_sjh.utils.core import (
     NLevelPhysicalParams,
     RelaxationChannel,
     PureDephasingChannel,
 )
 
-field = make_default_gaussian_carrier_field(
+field = make_gaussian_carrier_envelope_field(
     E0_MV_per_cm=0.05,
     laser_energy_eV=1.5,
-    pulse_center_fs=0.0,
-    pulse_sigma_fs=10.0,
+    center_fs=0.0,
+    sigma_fs=10.0,
 )
 
 params = NLevelPhysicalParams(

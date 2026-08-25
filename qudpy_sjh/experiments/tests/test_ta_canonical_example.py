@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 import unittest
 
 import numpy as np
@@ -15,13 +16,21 @@ EXAMPLE_PATH = (
     / "ta"
     / "ta_three_level_canonical_phase_step_convergence.py"
 )
+FACTORIAL_PATH = (
+    REPO_ROOT
+    / "bin"
+    / "examples"
+    / "ta"
+    / "ta_harmonic_exciton_ladder_factorial_v3.py"
+)
 
 
-def _load_example():
-    spec = importlib.util.spec_from_file_location("ta_canonical_m6_example", EXAMPLE_PATH)
+def _load_module(path: Path, name: str):
+    spec = importlib.util.spec_from_file_location(name, path)
     if spec is None or spec.loader is None:
-        raise ImportError(EXAMPLE_PATH)
+        raise ImportError(path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -29,7 +38,8 @@ def _load_example():
 class CanonicalTAExampleTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.example = _load_example()
+        cls.example = _load_module(EXAMPLE_PATH, "ta_canonical_m6_example")
+        cls.factorial = _load_module(FACTORIAL_PATH, "ta_canonical_factorial_example")
 
     def test_n_changes_only_phase_sampling_identity(self):
         recipes = {n_steps: self.example.build_recipe(n_steps) for n_steps in (2, 3, 4)}
@@ -60,6 +70,22 @@ class CanonicalTAExampleTests(unittest.TestCase):
             "PhaseCyclingPlan",
             "ProjectedReadoutBundle",
             "TAPhaseCycledPumpProbeResult",
+            "ReadoutSpec",
+            "execute_with_legacy_readout",
+            "relative_response",
+        ):
+            self.assertNotIn(legacy_name, source)
+
+    def test_factorial_example_uses_recipe_first_workflow(self):
+        source = FACTORIAL_PATH.read_text(encoding="utf-8")
+        readout = self.factorial._make_readout(self.factorial.FactorialSettings())
+
+        self.assertEqual(readout.mode, "absorption_like")
+        self.assertIn("TAPrePCRecipe", source)
+        self.assertIn("project_phase_orders", source)
+        for legacy_name in (
+            "PhaseCyclingPlan",
+            "TAPhaseCyclingSpec",
             "ReadoutSpec",
             "execute_with_legacy_readout",
             "relative_response",

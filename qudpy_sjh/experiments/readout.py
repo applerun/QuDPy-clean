@@ -368,7 +368,7 @@ class ReadoutPlan:
                 zero_padding_factor=self.zero_padding_factor,
                 return_intermediates=self.return_intermediates,
             )
-            response["absorption_like_response"] = np.asarray(response["absorption"])
+            response["absorption_like_response"] = np.asarray(response.pop("absorption"))
             response["metadata"]["canonical_quantity"] = "absorption_like_response"
             return ReadoutResult(
                 mode=self.mode,

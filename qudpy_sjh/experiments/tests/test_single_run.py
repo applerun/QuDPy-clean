@@ -6,19 +6,15 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-from qutip import Qobj
 
 from qudpy_sjh.experiments.pulse_sequence import (
     PulseSequenceSpec,
     PulseSpec,
-    ReadoutSpec,
     SingleRunCheckpointSettings,
     SingleRunFieldPlan,
     SingleRunPlan,
-    compute_single_run_readout,
 )
-from qudpy_sjh.experiments.pulse_sequence.single_run import select_readout_field
-from qudpy_sjh.utils.core import DynamicsResult, NLevelPhysicalParams
+from qudpy_sjh.utils.core import NLevelPhysicalParams
 from qudpy_sjh.utils.fields import FieldPhySeries
 from qudpy_sjh.utils.fields.carrier_envelope import CarrierEnvelopeField, make_constant_carrier_envelope_field
 
@@ -73,23 +69,6 @@ def _field_plan(*, phase_vector=None) -> tuple[SingleRunFieldPlan, CarrierEnvelo
     return plan, pump_template, probe_template
 
 
-class ReadoutSpecTests(unittest.TestCase):
-    def test_readout_spec_validation_accepts_known_modes(self):
-        self.assertEqual(ReadoutSpec(mode="none").mode, "none")
-        self.assertEqual(ReadoutSpec(mode="polarization").mode, "polarization")
-        self.assertEqual(ReadoutSpec(mode="absorption").mode, "absorption")
-
-    def test_readout_spec_validation_rejects_invalid_values(self):
-        with self.assertRaises(ValueError):
-            ReadoutSpec(mode="ta")
-        with self.assertRaises(ValueError):
-            ReadoutSpec(number_density_m3=0.0)
-        with self.assertRaises(ValueError):
-            ReadoutSpec(zero_padding_factor=0)
-        with self.assertRaises(ValueError):
-            ReadoutSpec(rel_threshold=0.0)
-
-
 class SingleRunPlanTests(unittest.TestCase):
     def test_make_params_replaces_field_without_mutating_base_system(self):
         base = _base_params()
@@ -97,7 +76,6 @@ class SingleRunPlanTests(unittest.TestCase):
         plan = SingleRunPlan(
             base_params=base,
             field_plan=field_plan,
-            readout=ReadoutSpec(mode="none"),
             input_metadata={"operator": "single_run_test"},
         )
 
@@ -119,15 +97,6 @@ class SingleRunPlanTests(unittest.TestCase):
         self.assertEqual(params.input_metadata["single_run_workflow"]["case_name"], "case_a")
         self.assertEqual(params.input_metadata["single_run_workflow"]["execution_scope"], "dynamics_only")
         self.assertNotIn("readout", params.input_metadata["single_run_workflow"])
-
-    def test_readout_field_selection(self):
-        field_plan, _, _ = _field_plan()
-        field = field_plan.build_field()
-
-        self.assertIs(select_readout_field(field, None), field)
-        self.assertIs(select_readout_field(field, "probe"), field["probe"])
-        with self.assertRaises(KeyError):
-            select_readout_field(field, "missing")
 
     def test_phase_override_is_applied_in_make_params(self):
         base = _base_params()
@@ -162,31 +131,6 @@ class SingleRunPlanTests(unittest.TestCase):
             path = Path(tmp_dir) / "case.ckp"
             settings = SingleRunCheckpointSettings(enabled=True, checkpoint_path=path)
             self.assertEqual(settings.checkpoint_path, path)
-
-
-class SingleRunReadoutTests(unittest.TestCase):
-    def test_compute_polarization_readout_without_running_solver(self):
-        physical = _base_params()
-        result = DynamicsResult(
-            mode="lab_exact",
-            times=np.array([0.0, 1.0]),
-            times_fs=np.array([0.0, 1.0]),
-            states=[
-                Qobj(np.array([[1.0, 0.0], [0.0, 0.0]], dtype=np.complex128)),
-                Qobj(np.array([[0.5, 0.1], [0.1, 0.5]], dtype=np.complex128)),
-            ],
-            parameters=None,
-            physical_params=physical,
-        )
-
-        readout = compute_single_run_readout(result, readout=ReadoutSpec(mode="polarization"))
-
-        self.assertIsNotNone(readout)
-        assert readout is not None
-        self.assertEqual(readout.mode, "polarization")
-        self.assertEqual(readout.to_dict()["n_time_points"], 2)
-        self.assertGreater(readout.to_dict()["max_abs_polarization"], 0.0)
-
 
 if __name__ == "__main__":
     unittest.main()
