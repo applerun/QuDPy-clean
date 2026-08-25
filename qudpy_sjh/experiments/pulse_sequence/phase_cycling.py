@@ -1,7 +1,8 @@
-"""Legacy phase-grid execution and projected-result compatibility utilities.
+"""Legacy-only phase-grid execution and projected-result compatibility.
 
-Canonical pure Fourier mathematics lives in ``phase_projection``.  The heavy
-runner and result wrappers remain here temporarily for compatibility.
+Canonical pure Fourier mathematics lives in ``phase_projection``.  New code
+must use ``project_phase_orders``; the heavy runner and result wrappers remain
+only for historical examples, tests, and external compatibility.
 """
 
 from __future__ import annotations
@@ -295,7 +296,11 @@ class PhaseCyclingResult:
 
 @dataclass
 class PhaseCyclingPlan:
-    """Legacy orchestration that executes `SingleRunPlan` over a phase grid."""
+    """Legacy-only orchestration retained for historical callers.
+
+    Canonical recipes execute their own ``SingleRunPlan`` cases, construct a
+    named-axis observable, and call ``project_phase_orders``.
+    """
 
     base_plan: SingleRunPlan
     phase_grid: PhaseGrid

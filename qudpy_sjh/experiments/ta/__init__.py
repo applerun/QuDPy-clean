@@ -1,8 +1,14 @@
 """Transient absorption workflow helpers.
 
-package 顶层导出保持 legacy TA v1 prototype 的裸名稳定；TA recipe v2 的
-scan 类通过显式 ``*V2`` alias 暴露，避免同名 API 静默切换语义。
+Canonical recipe-first exports are listed first. Legacy TA v1/v2 names remain
+importable for compatibility and historical validation.
 """
+
+from .ta_recipe_first import (
+    TAPrePCObservable,
+    TAPrePCRecipe,
+    build_ta_pre_pc_observable,
+)
 
 from .ta_settings import (
     TA_EXPERIMENT_NAME,
@@ -49,12 +55,6 @@ from .ta_recipe_v2 import (
     validate_ta_contrast_axes_for_scan,
     validate_ta_readout_bundle_axes,
 )
-from .ta_recipe_first import (
-    TAPrePCObservable,
-    TAPrePCRecipe,
-    build_ta_pre_pc_observable,
-)
-
 LegacyTASettings = TASettings
 LegacyTAPlan = TAPlan
 LegacyTADelayScanPlan = TADelayScanPlan
@@ -62,6 +62,10 @@ LegacyTAResult = TAResult
 LegacyTAResultIO = TAResultIO
 
 __all__ = [
+    "TAPrePCObservable",
+    "TAPrePCRecipe",
+    "build_ta_pre_pc_observable",
+    # Legacy TA v1/v2 compatibility exports.
     "TA_EXPERIMENT_NAME",
     "TATemplateSettings",
     "TAAbsorptionSettings",
@@ -104,7 +108,4 @@ __all__ = [
     "extract_ta_absorption_bundle",
     "validate_ta_contrast_axes_for_scan",
     "validate_ta_readout_bundle_axes",
-    "TAPrePCObservable",
-    "TAPrePCRecipe",
-    "build_ta_pre_pc_observable",
 ]

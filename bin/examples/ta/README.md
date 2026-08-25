@@ -6,13 +6,22 @@ older validation script.
 
 ## Minimal / canonical example
 
-- `ta_three_level_phase_cycling_v2_legacy_output_system_maker.py`
-  is the current three-level systems-maker + TA recipe v2 bridge. Use its
-  simulation, system, pulse, delay, and readout parameters as the baseline for
-  focused TA comparisons.
+- `ta_three_level_canonical_phase_step_convergence.py` demonstrates the full
+  canonical workflow: `System -> TAPrePCRecipe -> SimRes -> ReadoutPlan ->
+  deltaT/T -> project_phase_orders -> save_projected_result`. It also performs
+  the M6 N=2/3/4 fixed-LO convergence validation at -100, 0, and +100 fs.
+
+The canonical physical phase-order convention is `exp(-i m dot phi)` for a
+pathway and `exp(+i m dot phi)` for projection. The example targets physical
+`m={"pump": 0, "probe": 1}`. Pump and probe interaction phases are cycled;
+the fixed phase-zero detector LO is not a phase-grid dimension.
 
 ## Regression / legacy validation
 
+- `ta_three_level_phase_cycling_v2_legacy_output_system_maker.py` is the
+  systems-maker + TA recipe v2 bridge retained as the physical-parameter and
+  legacy-output regression baseline. Its heavy phase-cycling workflow is not
+  the API new code should copy.
 - `ta_three_level_intrinsic_response_phase_cycling_demo.py` preserves the
   original three-level phase-cycling workflow and legacy outputs.
 - `ta_three_level_intrinsic_response_phase_cycling_demo_plus.py` adds report
@@ -24,7 +33,8 @@ older validation script.
 
 - `ta_three_level_phase_step_comparison.py` compares uniform N=2, N=3, N=4,
   N=8, and N=16 pump-phase grids at -100, 0, and +100 fs while keeping the
-  canonical three-level parameters fixed.
+  three-level parameters fixed. It is a legacy pump-only phase-average study,
+  not the canonical detector-level S(0,1) convergence result.
 - `ta_three_level_two_dimensional_phase_cycling.py` runs a full Cartesian
   pump/probe phase grid at one delay and projects only the phase-order channels
   declared by its JSON plan. The default plan evaluates S(0,0), S(0,1), and
@@ -56,3 +66,11 @@ older validation script.
 
 No example in this inventory should be deleted or moved solely to simplify
 the directory layout.
+
+## Compatibility API
+
+Historical examples may still import `PhaseCyclingPlan`, `ReadoutSpec`,
+`ProjectedReadoutBundle`, `TAPhaseCyclingSpec`, or TA v2 projected wrappers.
+They remain available for reproducibility. New TA work should use
+`TAPrePCRecipe`, `ReadoutPlan`, `project_phase_orders`, and the projected
+save/load helpers shown by the canonical example.

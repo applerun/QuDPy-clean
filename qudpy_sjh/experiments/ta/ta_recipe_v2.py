@@ -1,4 +1,4 @@
-"""Minimal TA recipe v2 scaffold built on generic pulse-sequence layers.
+"""Legacy TA recipe v2 compatibility scaffold.
 
 本模块只表达最小 TA recipe v2 编排：
 
@@ -12,10 +12,9 @@
 TA subtraction 只由显式 `compute_ta_contrast(...)` 执行，固定 convention 为
 `S_TA = S_pump_probe - S_probe_only`。delay scan 只把多个单 delay contrast
 按输入 delay 顺序堆叠成 delay × energy map，不做排序、插值或重采样。
-当前不实现 phase-cycling TA、TAResultIO v2、绘图、落盘或旧 demo 迁移。
-readout 不是第三个激发脉冲；probe 既是 physical probe pulse，也是当前
-temporary `ReadoutSpec(readout_field_name=probe.name)` compatibility path 的
-reference field。Recipe-first `ReadoutPlan` 编排留给后续 milestone。
+Canonical TA code should use ``TAPrePCRecipe`` with standalone ``ReadoutPlan``
+and ``project_phase_orders``.  The objects in this module remain available for
+historical TA v2 callers and regression examples.
 """
 
 from __future__ import annotations
@@ -536,12 +535,19 @@ def build_ta_pump_probe_phase_cycling_plan(
     phase_cycling: TAPhaseCyclingSpec,
     case_name: str | None = None,
 ) -> PhaseCyclingPlan:
-    """为单 delay pump-probe response 构造可选 phase-cycling plan。
+    """Build the deprecated heavy-runner pump-probe phase-cycling plan.
 
     本 helper 只对 pump-probe plan 做 phase cycling；不处理 probe-only
     reference，不做 TA subtraction，也不保存文件。`target_phase_vector`
     来自 `phase_cycling`，必须由用户或上层 recipe 显式给出。
     """
+
+    warnings.warn(
+        "build_ta_pump_probe_phase_cycling_plan is deprecated; use "
+        "TAPrePCRecipe followed by project_phase_orders.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
     if not isinstance(ta_plan, TASingleDelayPlan):
         raise TypeError("ta_plan must be a TASingleDelayPlan instance.")
@@ -588,11 +594,18 @@ def build_ta_phase_cycled_pump_probe_bundle(
     signal_name: str | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> ProjectedReadoutBundle:
-    """把 pump-probe phase-cycling result 打包为 projected readout bundle。
+    """Build the deprecated TA-specific projected readout bundle.
 
     本 helper 不改变 projected signal 数值，不做 probe-only reference，也不做
     TA subtraction 或 delay scan。
     """
+
+    warnings.warn(
+        "build_ta_phase_cycled_pump_probe_bundle is deprecated; persist the "
+        "lightweight project_phase_orders mapping directly.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
 
     if not isinstance(phase_result, PhaseCyclingResult):
         raise TypeError("phase_result must be a PhaseCyclingResult instance.")

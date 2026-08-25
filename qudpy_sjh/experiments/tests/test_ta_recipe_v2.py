@@ -449,7 +449,11 @@ class TAPhaseCyclingScaffoldTests(unittest.TestCase):
         ta_plan = _ta_plan()
         spec = self._phase_spec()
 
-        phase_plan = build_ta_pump_probe_phase_cycling_plan(ta_plan, phase_cycling=spec)
+        with self.assertWarnsRegex(DeprecationWarning, "TAPrePCRecipe"):
+            phase_plan = build_ta_pump_probe_phase_cycling_plan(
+                ta_plan,
+                phase_cycling=spec,
+            )
 
         self.assertIsInstance(phase_plan, PhaseCyclingPlan)
         self.assertEqual([pulse.name for pulse in phase_plan.base_plan.field_plan.sequence.pulses], ["pump", "probe"])
@@ -488,7 +492,11 @@ class TAPhaseCyclingScaffoldTests(unittest.TestCase):
             )
 
         phase_result = phase_plan.execute(executor=fake_executor)
-        bundle = build_ta_phase_cycled_pump_probe_bundle(phase_result, phase_cycling=spec)
+        with self.assertWarnsRegex(DeprecationWarning, "project_phase_orders"):
+            bundle = build_ta_phase_cycled_pump_probe_bundle(
+                phase_result,
+                phase_cycling=spec,
+            )
 
         self.assertIsInstance(bundle, ProjectedReadoutBundle)
         self.assertEqual(bundle.signal_name, "projected_probe_absorption")

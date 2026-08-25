@@ -506,8 +506,14 @@ Milestone 0 不删除、rename 或改变以上任何 runtime object。
 - **Milestone 5 completed:** canonical projected mapping 已支持 NPZ+JSON round-trip；
   legacy readout/TA projected wrappers 已标 deprecated compatibility，SimRes 仍是昂贵
   state 的 checkpoint ownership。
-- **Milestone 6 deferred:** scientific convergence 验证后再清理 heavy runner 与已
-  deprecated wrappers；M5 不删除这些 compatibility APIs。
+- **Milestone 6 completed:** canonical fixed-LO TA 已在相同物理参数下完成二维
+  N=2/3/4、T=-100/0/+100 fs 验证。N2 对 N4 numerical reference 的
+  relative-L2 error 为 0.99--1.70，不能区分 probe order +1/-1 modulo-2
+  aliases；N3 error 为 0.084--0.410，在本组 delay 上仍不能宣称普遍收敛。
+  详细 setup、metrics、限制与 artifact 路径见 `docs/ta_phase_step_convergence_m6.md`。
+  Heavy runner 家族保留为 legacy-only，因为历史 factorial/examples/tests 仍有
+  concrete compatibility 用途；TA v2 高层 phase-plan/bundle builders 已发出
+  `DeprecationWarning`，canonical docs/examples 不再推荐旧 wrappers。
 - **Separate system milestone:** 修复 `NLevelSystem.initial_state` 与 transition
   dephasing 到 solver execution 的完整映射。
 
