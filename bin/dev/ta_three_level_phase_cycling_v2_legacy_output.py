@@ -118,7 +118,7 @@ def _physical_params_compatible(expected, actual) -> tuple[bool, str]:
 
 def _execute_with_checkpoint(plan, *, output_dir: Path, case_key: str, config):
     local_plan = _with_checkpoint(plan, output_dir=output_dir, case_key=case_key, config=config)
-    result = local_plan.execute()
+    result = local_plan.execute_with_legacy_readout()
     if not bool(config.use_checkpoints) or bool(config.force_run):
         return result
 
@@ -136,7 +136,7 @@ def _execute_with_checkpoint(plan, *, output_dir: Path, case_key: str, config):
         local_plan,
         checkpoint=replace(local_plan.checkpoint, force_run=True),
     )
-    return rerun_plan.execute()
+    return rerun_plan.execute_with_legacy_readout()
 
 
 def _assert_reference_axis(name: str, reference: np.ndarray, current: np.ndarray, *, case_key: str) -> None:

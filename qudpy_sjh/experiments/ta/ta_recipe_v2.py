@@ -13,8 +13,9 @@ TA subtraction 只由显式 `compute_ta_contrast(...)` 执行，固定 conventio
 `S_TA = S_pump_probe - S_probe_only`。delay scan 只把多个单 delay contrast
 按输入 delay 顺序堆叠成 delay × energy map，不做排序、插值或重采样。
 当前不实现 phase-cycling TA、TAResultIO v2、绘图、落盘或旧 demo 迁移。
-readout 不是第三个激发脉冲；probe 既是 physical probe pulse，也是
-`ReadoutSpec(readout_field_name=probe.name)` 的 reference field。
+readout 不是第三个激发脉冲；probe 既是 physical probe pulse，也是当前
+temporary `ReadoutSpec(readout_field_name=probe.name)` compatibility path 的
+reference field。Recipe-first `ReadoutPlan` 编排留给后续 milestone。
 """
 
 from __future__ import annotations
@@ -1000,10 +1001,10 @@ class TASingleDelayPlan:
         )
 
     def execute_pump_probe(self) -> SingleRunResult:
-        return self.make_pump_probe_plan().execute()
+        return self.make_pump_probe_plan().execute_with_legacy_readout()
 
     def execute_probe_only(self) -> SingleRunResult:
-        return self.make_probe_only_plan().execute()
+        return self.make_probe_only_plan().execute_with_legacy_readout()
 
     def execute_pair(self) -> "TASingleDelayPairResult":
         pump_probe = self.execute_pump_probe()

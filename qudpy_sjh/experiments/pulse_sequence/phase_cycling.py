@@ -618,7 +618,9 @@ class PhaseCyclingPlan:
         *,
         executor: Callable[[SingleRunPlan], SingleRunResult] | None = None,
     ) -> PhaseCyclingResult:
-        run_one = (lambda plan: plan.execute()) if executor is None else executor
+        # Temporary M2 compatibility: this heavy runner still projects embedded
+        # readout and is intentionally not simplified until Milestone 4.
+        run_one = (lambda plan: plan.execute_with_legacy_readout()) if executor is None else executor
         phase_vectors = self.phase_vectors()
         arrays: list[np.ndarray] = []
         records: list[PhaseCaseRecord] = []

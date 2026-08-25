@@ -11,10 +11,18 @@ from qudpy_sjh.experiments.ta import (
     LegacyTASettings,
     TADelayScanPlan,
     TADelayScanPlanV2,
+    TAPrePCObservable,
+    TAPrePCRecipe,
+    build_ta_pre_pc_observable,
 )
 from qudpy_sjh.experiments.ta.ta_case_plan import TADelayScanPlan as LegacyModuleDelayScanPlan
 from qudpy_sjh.experiments.ta.ta_case_plan import TAPlan as LegacyModuleTAPlan
 from qudpy_sjh.experiments.ta.ta_recipe_v2 import TADelayScanPlan as RecipeV2DelayScanPlan
+from qudpy_sjh.experiments.ta.ta_recipe_first import (
+    TAPrePCObservable as DirectTAPrePCObservable,
+    TAPrePCRecipe as DirectTAPrePCRecipe,
+    build_ta_pre_pc_observable as direct_build_ta_pre_pc_observable,
+)
 from qudpy_sjh.experiments.ta.ta_result import TAResult as LegacyModuleTAResult
 from qudpy_sjh.experiments.ta.ta_result import TAResultIO as LegacyModuleTAResultIO
 from qudpy_sjh.experiments.ta.ta_settings import TASettings as LegacyModuleTASettings
@@ -40,6 +48,11 @@ class TAExportTests(unittest.TestCase):
 
         self.assertIs(DirectDelayScanPlan, RecipeV2DelayScanPlan)
 
+    def test_recipe_first_api_is_explicitly_exported(self):
+        self.assertIs(TAPrePCObservable, DirectTAPrePCObservable)
+        self.assertIs(TAPrePCRecipe, DirectTAPrePCRecipe)
+        self.assertIs(build_ta_pre_pc_observable, direct_build_ta_pre_pc_observable)
+
     def test_all_exports_are_unique_and_explicit(self):
         exported = list(ta_package.__all__)
 
@@ -49,6 +62,9 @@ class TAExportTests(unittest.TestCase):
         self.assertIn("TADelayScanPlanV2", exported)
         self.assertIn("TADelayScanMapV2", exported)
         self.assertIn("TADelayScanResultV2", exported)
+        self.assertIn("TAPrePCObservable", exported)
+        self.assertIn("TAPrePCRecipe", exported)
+        self.assertIn("build_ta_pre_pc_observable", exported)
         self.assertNotIn("TADelayScanMap", exported)
         self.assertNotIn("TADelayScanResult", exported)
 

@@ -17,7 +17,9 @@
 - canonical Fourier projection runtime 已使用固定含义的 `+i` projection；
   显式 `sign=-1` 仅作为发出 `DeprecationWarning` 的临时 legacy compatibility
   path 保留，不再定义 canonical `target_phase_vector` 语义；
-- 当前 `ReadoutSpec` 和 readout execution 嵌在 `SingleRunPlan` 中；
+- canonical `SingleRunPlan.execute()` 已止于 dynamics；独立 `ReadoutPlan` 已负责
+  polarization-to-observable 计算。`ReadoutSpec`、`SingleRunResult.readout` 与
+  `execute_with_legacy_readout()` 仅作为 temporary compatibility path 保留；
 - 当前 heavy `PhaseCyclingPlan` 会生成 case、执行 solver/readout 并做投影；
 - 当前 TA phase-cycling scaffold 在 recipe-specific postprocess 之前投影
   pump-probe readout；
@@ -28,8 +30,8 @@
 - 当前部分 API 使用 `absorption` 表示
   `omega * Im[P(omega) / E(omega)]`，它不是 detector intensity。
 
-以上均是已知 mismatch，不是本文档遗漏。Milestone 0 只冻结语言和目标边界，
-不改变 runtime behavior。
+剩余项目均是已知 mismatch，不是本文档遗漏。Milestone 0 只冻结语言和目标边界；
+Milestone 1/2 已分别迁移 Fourier convention 与 readout ownership。
 
 ## 核心原则
 
@@ -236,20 +238,24 @@ Recipe 可以直接由 script/module 定义。不要为了图中的逻辑节点�
 
 ## Readout Architecture
 
-目标数据流是：
+Milestone 2 后的 canonical 数据流是：
 
 ```text
 SimRes -> polarization P -> ReadoutPlan.execute(P) -> ReadoutResult I
 ```
 
-`ReadoutPlan` 是真正 callable 的 generic abstraction，而不是 `ReadoutSpec` 的
-简单 rename。它至少配置 readout field、frequency/transform settings、window、
-detector mode 和 detector parameters。第一版允许：
+`qudpy_sjh.experiments.readout.ReadoutPlan` 是真正 executable 的 generic
+abstraction，而不是 `ReadoutSpec` 的简单 rename。`PolarizationResult` 由保存的
+`DynamicsResult` density trajectory、physical dipole matrix 和 number density
+生成；同一份 polarization 可以执行任意多个便宜的 `ReadoutPlan`。第一版允许：
 
 1. 引用 `PulseSequence` 中已经进入 Hamiltonian 的 named interaction field；
 2. 直接持有一个不进入 Hamiltonian 的 external `FieldPhyRoot` 作为 guiding/LO。
 
 当前 scope 中 readout/guiding field 不参与 phase cycling；暂不设计 phase-cycled LO。
+`readout_field` 使用单一 union semantics：字符串引用 named interaction subfield，
+`FieldPhyRoot` 表示 external/direct field，`None` 表示 total interaction field。
+external field 只在 polarization time grid 上采样，不进入 Hamiltonian。
 
 Readout behavior 至少应能够表达 full detector 与 weak-signal approximation：
 
@@ -263,14 +269,25 @@ E_sig proportional to i * omega * P_sig
 
 忽略相应高阶项属于 weak-signal readout approximation，不属于 phase cycling。
 
-当前 `absorption` readout 实际计算：
+canonical `mode="absorption_like"` 计算：
 
 ```text
 absorption = omega * Im[P(omega) / E(omega)]
 ```
 
-它是 susceptibility/absorption-like quantity，不是 full detector intensity。目标 public
-术语倾向 `absorption_like_response`，最终 runtime rename 留给后续 milestone 决定。
+它是 susceptibility/absorption-like quantity，不是 full detector intensity。
+canonical spectrum key 为 `absorption_like_response`；`absorption` 和
+`omega_im_P_over_E` 暂时作为 numerical-parity aliases 保留。原有 relative-threshold
+mask、positive-frequency selection、window、mean subtraction 和 zero padding 行为未改。
+
+`mode="full"` 与 `mode="weak"` 共用同一个 coherent detector implementation：
+
+```text
+E_signal(omega) = i * emitted_field_scale * omega * P(omega)
+```
+
+其中 `emitted_field_scale` 是调用者提供的比例系数；runtime 不赋予它未经验证的
+绝对强度解释。P 与 readout field 在同一 `time_fs` grid 上 FFT，不做 interpolation。
 
 ## Recipe、Condition 与 postprocess
 
@@ -305,6 +322,32 @@ S(T, phi_pump, phi_probe, omega)
 delay convention 同样属于 Recipe。PulseSequence 只接收 concrete centers，不知道
 “TA positive delay”的含义。当前 TA 可以使用 `probe_center=0`、`pump_center=-T`；
 其他 Recipe 可以采用不同 origin，只要明确 coordinate-to-center mapping。
+
+Milestone 3 已由 `experiments/ta/ta_recipe_first.py` 中的轻量
+`TAPrePCRecipe` 实现。当前 canonical TA 路径为：
+
+```text
+TAPrePCRecipe.build_dynamics_plans()
+  -> condition-specific SingleRunPlan
+  -> reusable SingleRunResult / SimRes
+  -> TAPrePCRecipe.apply_readout(ReadoutPlan)
+  -> ReadoutResult maps
+  -> TAPrePCRecipe.postprocess(...)
+  -> TAPrePCObservable S(T, phase dimensions, energy)
+  -> future generic phase projection
+```
+
+`pump_on` 与 `pump_off` 各自拥有一个共享的 `PulseSequenceSpec` definition；
+不同 `T` 只改变 concrete centers。`pump_off` dynamics key 为
+`(probe_phase_index,)`，probe 未 cycle 时为 `()`，所以它不随 `T` 或不存在的
+pump phase 重算。broadcast 只发生在 postprocess，不改变完整实验 grid 的定义。
+
+detector-level canonical quantity 明确命名为 `delta_T_over_T`，同时保留
+`difference_quantity="delta_I"`。分母有效性使用显式 absolute/relative threshold；
+默认两者为零时只屏蔽 exact zero，所有无效点输出 NaN 并写入 metadata warning。
+`delta_absorption_like = A_on - A_off` 仅作为数值兼容路径，不能解释为 detector
+level `deltaT/T`。full 与 weak detector 仍完全由可替换的 `ReadoutPlan` 负责；
+Recipe postprocess 对二者使用相同代数。
 
 ## S 与 Named Axes Contract
 
@@ -364,8 +407,10 @@ Recipe postprocess 重建。projected output 至少保存：
 | `TAPhaseCyclingSpec` | split into Recipe inputs | targets 属于 Recipe；projection math 属于 generic layer |
 | `TAPhaseCycledPumpProbeResult` | target-to-remove | projected data 应保持 experiment-generic |
 | TA projected-bundle builders | target-to-remove | 不再需要 readout-specific projection wrapper |
-| `ReadoutSpec` | redesign later | 目标是 behavioral `ReadoutPlan`，不是简单 rename |
-| `SingleRunReadoutResult` | redesign later | 目标为独立 `ReadoutResult` |
+| `ReadoutPlan` / `ReadoutResult` | keep | M2 已实现独立 polarization-to-detector stage |
+| `ReadoutSpec` | temporary compatibility | 只通过 adapter 翻译为 canonical `ReadoutPlan` |
+| `SingleRunReadoutResult` | temporary alias | 当前 alias 到独立 `ReadoutResult`；名称清理留给 M5 |
+| `SingleRunPlan.readout` | temporary compatibility | `execute()` 忽略它；旧 runner 显式调用 compatibility method |
 | `SingleRunFieldPlan` | defer | 是否仍需单独存在要在 execution/readout 重构后评估 |
 | `independent_phase` | defer | 可能形成 phase-independence 双 source of truth |
 | System adapter initial-state/dephasing mapping | defer/separate issue | 问题真实但与 PC/Readout/Recipe 重构正交 |
@@ -376,10 +421,13 @@ Milestone 0 不删除、rename 或改变以上任何 runtime object。
 
 - **Milestone 1 completed:** canonical Fourier implementation 已迁移到固定含义的
   `+i` convention，并加入 convention/version metadata 与 synthetic harmonic tests。
-- **Later readout milestone:** 从 `SingleRunPlan` 抽取 behavioral `ReadoutPlan`，
-  支持 interaction-field reference、external field、full/weak detector modes。
-- **Later recipe milestone:** 先 readout，再 `Recipe.postprocess`，最后 generic
-  multi-target phase projection；实现昂贵 cases 的 reuse/broadcast。
+- **Milestone 2 completed:** behavioral `ReadoutPlan` 已从 dynamics execution 抽离，
+  支持 interaction-field reference、external field、absorption-like、full 与 weak modes。
+- **Milestone 3 completed:** `TAPrePCRecipe` 先复用 dynamics，再执行独立 readout，
+  最后由 `postprocess` 构造 named-axis pre-PC `S(...)`；pump-off 只按真实 probe
+  phase dependency 执行并在 `T`/pump-phase 方向 broadcast。
+- **Milestone 4 deferred:** pure array projection API、multiple targets 与 heavy
+  `PhaseCyclingPlan` removal 尚未开始。
 - **Later cleanup milestone:** 数值/物理验证和 example/test migration 后，才标记
   heavy runner、bundle 和 TA projected wrappers deprecated，随后删除。
 - **Separate system milestone:** 修复 `NLevelSystem.initial_state` 与 transition

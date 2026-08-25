@@ -803,7 +803,7 @@ def run_one_case(
         },
     )
     print(f"[factorial] running {case.case_name}: EIS={case.eis_eV:g}, PB={case.pb:g}, EID={case.eid:g}")
-    probe_result = first_plan.make_probe_only_plan().execute()
+    probe_result = first_plan.make_probe_only_plan().execute_with_legacy_readout()
     probe_spectrum = _read_absorption_spectrum(probe_result)
     energy = np.asarray(probe_spectrum["energy_eV"], dtype=float)
     omega = np.asarray(probe_spectrum["omega_fs_inv"], dtype=float)

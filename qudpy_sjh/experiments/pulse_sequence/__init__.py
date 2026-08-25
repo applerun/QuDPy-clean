@@ -1,5 +1,14 @@
 """Generic pulse-sequence scaffolds for one concrete field configuration."""
 
+from qudpy_sjh.experiments.readout import (
+    PolarizationResult,
+    ReadoutPlan,
+    ReadoutResult,
+    coherent_detector_terms,
+    compute_polarization_result,
+    resolve_readout_field,
+)
+
 from .phase_cycling import (
     AxisMetadataSpec,
     PHASE_PROJECTION_CONVENTION,
@@ -51,9 +60,12 @@ __all__ = [
     "PhaseGrid",
     "PhaseProjectionSpec",
     "ProjectedReadoutBundle",
+    "PolarizationResult",
     "PulseSequenceSpec",
     "PulseSpec",
     "ReadoutSpec",
+    "ReadoutPlan",
+    "ReadoutResult",
     "SingleRunCheckpointSettings",
     "SingleRunFieldPlan",
     "SingleRunPlan",
@@ -62,6 +74,8 @@ __all__ = [
     "build_projected_readout_bundle",
     "build_uniform_phase_grid",
     "compute_single_run_readout",
+    "coherent_detector_terms",
+    "compute_polarization_result",
     "extract_single_run_quantity",
     "fourier_project_phase_cases",
     "is_supported_phase_backend",
@@ -69,6 +83,7 @@ __all__ = [
     "normalize_target_phase_vector",
     "phase_projection_convention_metadata",
     "phase_projection_weight",
+    "resolve_readout_field",
     "supports_phase_override",
     "validate_phase_tag",
     "validate_pulse_name",

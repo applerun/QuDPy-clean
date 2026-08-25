@@ -49,6 +49,11 @@ from .ta_recipe_v2 import (
     validate_ta_contrast_axes_for_scan,
     validate_ta_readout_bundle_axes,
 )
+from .ta_recipe_first import (
+    TAPrePCObservable,
+    TAPrePCRecipe,
+    build_ta_pre_pc_observable,
+)
 
 LegacyTASettings = TASettings
 LegacyTAPlan = TAPlan
@@ -99,4 +104,7 @@ __all__ = [
     "extract_ta_absorption_bundle",
     "validate_ta_contrast_axes_for_scan",
     "validate_ta_readout_bundle_axes",
+    "TAPrePCObservable",
+    "TAPrePCRecipe",
+    "build_ta_pre_pc_observable",
 ]

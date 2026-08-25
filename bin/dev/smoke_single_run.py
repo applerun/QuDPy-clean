@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Milestone 3 generic SingleRunPlan execute smoke.
+"""Generic dynamics-then-readout smoke.
 
 这是开发 smoke，不是正式 example。它只验证 generic single-run 层可以实际
-构造 field、调用 run_case，并产出 absorption-like readout；不做 TA
+构造 field、调用 run_case，再独立产出 absorption-like readout；不做 TA
 subtraction、不做 phase cycling projection、不保存输出文件。
 """
 
@@ -22,10 +22,11 @@ if str(REPO_ROOT) not in sys.path:
 from qudpy_sjh.experiments.pulse_sequence import (  # noqa: E402
     PulseSequenceSpec,
     PulseSpec,
-    ReadoutSpec,
+    ReadoutPlan,
     SingleRunCheckpointSettings,
     SingleRunFieldPlan,
     SingleRunPlan,
+    compute_polarization_result,
 )
 from qudpy_sjh.utils.core import NLevelPhysicalParams, ParaNormalizer  # noqa: E402
 from qudpy_sjh.utils.fields import FieldPhySeries  # noqa: E402
@@ -111,13 +112,6 @@ def main() -> None:
         base_params=base_params,
         field_plan=field_plan,
         normalizer=ParaNormalizer(),
-        readout=ReadoutSpec(
-            mode="absorption",
-            readout_field_name="probe",
-            rel_threshold=1.0e-10,
-            zero_padding_factor=4,
-            return_intermediates=False,
-        ),
         checkpoint=SingleRunCheckpointSettings(enabled=False),
     )
 
@@ -137,17 +131,26 @@ def main() -> None:
     hermiticity_error = result.dynamics_result.max_hermiticity_error()
     _require(np.isfinite(trace_error), "max_trace_error must be finite.")
     _require(np.isfinite(hermiticity_error), "max_hermiticity_error must be finite.")
-    _require(result.readout is not None, "absorption readout must produce a readout result.")
-    assert result.readout is not None
-    _require(result.readout.mode == "absorption", "readout mode must be absorption.")
-    _require(result.readout.spectrum is not None, "absorption readout must produce a spectrum.")
-    assert result.readout.spectrum is not None
+    _require(result.readout is None, "canonical SingleRunPlan.execute() must stop at dynamics.")
+    polarization = compute_polarization_result(
+        result.dynamics_result,
+        number_density_m3=1.0e24,
+    )
+    readout = ReadoutPlan(
+        mode="absorption_like",
+        readout_field="probe",
+        rel_threshold=1.0e-10,
+        zero_padding_factor=4,
+        return_intermediates=False,
+    ).execute(polarization, interaction_field=result.params.field)
+    _require(readout.spectrum is not None, "absorption-like readout must produce a spectrum.")
+    assert readout.spectrum is not None
     for key in ("energy_eV", "omega_fs_inv", "absorption"):
-        _require(key in result.readout.spectrum, f"spectrum is missing key: {key}")
+        _require(key in readout.spectrum, f"spectrum is missing key: {key}")
 
-    n_spectrum_points = _spectrum_points(result.readout.spectrum)
-    energy = np.asarray(result.readout.spectrum["energy_eV"], dtype=float)
-    readout_summary = result.readout.to_dict()
+    n_spectrum_points = _spectrum_points(readout.spectrum)
+    energy = np.asarray(readout.spectrum["energy_eV"], dtype=float)
+    readout_summary = readout.to_dict()
     field_metadata = result.field_metadata
     _require(field_metadata["sub_field_names"] == ["pump", "probe"], "field metadata must contain pump/probe.")
     _require(
@@ -160,7 +163,7 @@ def main() -> None:
     print(f"n_time_points: {readout_summary['n_time_points']}")
     print(f"max_trace_error: {trace_error:.6e}")
     print(f"max_hermiticity_error: {hermiticity_error:.6e}")
-    print(f"readout_mode: {result.readout.mode}")
+    print(f"readout_mode: {readout.mode}")
     print(f"n_spectrum_points: {n_spectrum_points}")
     print(f"energy_range_eV: {float(np.min(energy)):.6f} -> {float(np.max(energy)):.6f}")
     print(f"readout_field_source: {readout_summary['readout_field_source']}")

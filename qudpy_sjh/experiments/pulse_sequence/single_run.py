@@ -1,11 +1,12 @@
-"""Generic pulse-sequence single-run execution and readout layer.
+"""Generic pulse-sequence single-run dynamics execution.
 
 本模块只负责把一个 `SingleRunFieldPlan` 落到一次具体传播：
 
     field_plan -> FieldPhySeries -> replace(base_params, field=...) -> run_case
 
-readout 只提供通用 polarization / absorption-like spectrum，不包含 TA
-subtraction、phase average、2DES projection 或任何具体实验 recipe 语义。
+Canonical ``SingleRunPlan.execute()`` stops at dynamics.  The legacy embedded
+readout configuration remains only as an explicit compatibility adapter while
+callers migrate to ``DynamicsResult -> PolarizationResult -> ReadoutPlan``.
 """
 
 from __future__ import annotations
@@ -21,9 +22,14 @@ from qudpy_sjh.experiments.pulse_sequence.pulse_sequence import (
     SingleRunFieldPlan,
     validate_pulse_name,
 )
+from qudpy_sjh.experiments.readout import (
+    ReadoutPlan,
+    ReadoutResult,
+    compute_polarization_result,
+    select_interaction_readout_field,
+)
 from qudpy_sjh.utils.core import DynamicsResult, NLevelPhysicalParams, ParaNormalizer, run_case
 from qudpy_sjh.utils.fields import FieldPhyRoot, FieldPhySeries
-from qudpy_sjh.utils.spectroscopy import lab_frame_absorption_response, polarization_C_per_m2
 
 
 _READOUT_MODES = {"none", "polarization", "absorption"}
@@ -34,30 +40,12 @@ def _copy_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return dict(metadata or {})
 
 
-def _json_array(value: Any) -> Any:
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {str(key): _json_array(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_array(item) for item in value]
-    if isinstance(value, complex):
-        return {"real": float(value.real), "imag": float(value.imag)}
-    return value
-
-
-def _array_range(array: np.ndarray) -> tuple[float, float] | None:
-    values = np.asarray(array, dtype=float)
-    if values.size == 0:
-        return None
-    return float(np.min(values)), float(np.max(values))
-
-
 @dataclass(frozen=True)
 class ReadoutSpec:
-    """一次 single-run 的通用 readout 配置。"""
+    """Legacy embedded single-run readout configuration.
+
+    New code should construct ``ReadoutPlan`` and execute it after dynamics.
+    """
 
     mode: str = "none"
     number_density_m3: float = 1.0e24
@@ -110,44 +98,8 @@ class ReadoutSpec:
         }
 
 
-@dataclass
-class SingleRunReadoutResult:
-    """一次 single-run 的通用 readout 结果。"""
-
-    mode: str
-    time_fs: np.ndarray | None = None
-    polarization_C_per_m2: np.ndarray | None = None
-    readout_field_MV_per_cm: np.ndarray | None = None
-    spectrum: dict[str, Any] | None = None
-    metadata: dict[str, Any] = dataclass_field(default_factory=dict)
-
-    def to_dict(self, *, include_arrays: bool = False) -> dict[str, Any]:
-        polarization = None if self.polarization_C_per_m2 is None else np.asarray(self.polarization_C_per_m2)
-        readout_field = None if self.readout_field_MV_per_cm is None else np.asarray(self.readout_field_MV_per_cm)
-        time = None if self.time_fs is None else np.asarray(self.time_fs, dtype=float)
-        spectrum = self.spectrum or {}
-        energy = np.asarray(spectrum.get("energy_eV", []), dtype=float)
-
-        payload: dict[str, Any] = {
-            "class": self.__class__.__name__,
-            "mode": self.mode,
-            "n_time_points": None if time is None else int(time.size),
-            "max_abs_polarization": None if polarization is None else float(np.max(np.abs(polarization))),
-            "max_abs_readout_field_MV_per_cm": None if readout_field is None else float(np.max(np.abs(readout_field))),
-            "readout_field_name": self.metadata.get("readout_field_name"),
-            "readout_field_source": self.metadata.get("readout_field_source"),
-            "spectrum": {
-                "n_points": int(energy.size),
-                "energy_range_eV": _array_range(energy),
-            } if self.spectrum is not None else None,
-            "metadata": dict(self.metadata),
-        }
-        if include_arrays:
-            payload["time_fs"] = None if time is None else time.tolist()
-            payload["polarization_C_per_m2"] = None if polarization is None else _json_array(polarization)
-            payload["readout_field_MV_per_cm"] = None if readout_field is None else readout_field.tolist()
-            payload["spectrum_full"] = _json_array(self.spectrum) if self.spectrum is not None else None
-        return payload
+# Compatibility name retained for phase-cycling and TA wrappers until result cleanup.
+SingleRunReadoutResult = ReadoutResult
 
 
 @dataclass(frozen=True)
@@ -180,30 +132,33 @@ class SingleRunCheckpointSettings:
 
 
 def select_readout_field(field: FieldPhyRoot, readout_field_name: str | None) -> FieldPhyRoot:
-    """选择 readout denominator field；None 表示使用 total field。"""
+    """Compatibility wrapper for interaction-field readout selection."""
 
-    if not isinstance(field, FieldPhyRoot):
-        raise TypeError("field must be a FieldPhyRoot instance.")
-    if readout_field_name is None:
-        return field
-    name = validate_pulse_name(readout_field_name)
-    try:
-        selected = field[name]  # type: ignore[index]
-    except KeyError as exc:
-        raise KeyError(f"readout_field_name={name!r} was not found in the concrete field.") from exc
-    except TypeError as exc:
-        raise TypeError(
-            f"readout_field_name={name!r} requires a field container with named subfields."
-        ) from exc
-    if not isinstance(selected, FieldPhyRoot):
-        raise TypeError("selected readout field must be a FieldPhyRoot instance.")
-    return selected
+    name = None if readout_field_name is None else validate_pulse_name(readout_field_name)
+    return select_interaction_readout_field(field, name)
 
 
-def _readout_field_source(readout_field_name: str | None) -> str:
-    if readout_field_name is None:
-        return "total_field"
-    return f"subfield:{readout_field_name}"
+def readout_plan_from_spec(readout: ReadoutSpec) -> ReadoutPlan | None:
+    """Translate a legacy ``ReadoutSpec`` into the canonical executable plan."""
+
+    if not isinstance(readout, ReadoutSpec):
+        raise TypeError("readout must be a ReadoutSpec instance.")
+    if readout.mode == "none":
+        return None
+    mode = "absorption_like" if readout.mode == "absorption" else readout.mode
+    return ReadoutPlan(
+        mode=mode,
+        readout_field=readout.readout_field_name if mode != "polarization" else None,
+        window=readout.window,
+        subtract_mean=readout.subtract_mean,
+        rel_threshold=readout.rel_threshold,
+        zero_padding_factor=readout.zero_padding_factor,
+        return_intermediates=readout.return_intermediates,
+        metadata={
+            "compatibility_source": "ReadoutSpec",
+            **dict(readout.metadata),
+        },
+    )
 
 
 def compute_single_run_readout(
@@ -211,68 +166,44 @@ def compute_single_run_readout(
     *,
     readout: ReadoutSpec,
 ) -> SingleRunReadoutResult | None:
-    """对一次 `DynamicsResult` 计算通用 readout。"""
+    """Compatibility adapter from saved dynamics and ``ReadoutSpec``."""
 
     if not isinstance(result, DynamicsResult):
         raise TypeError("result must be a DynamicsResult instance.")
     if not isinstance(readout, ReadoutSpec):
         raise TypeError("readout must be a ReadoutSpec instance.")
-    if readout.mode == "none":
+    plan = readout_plan_from_spec(readout)
+    if plan is None:
         return None
     physical = result.physical_params
     if physical is None:
         raise ValueError("DynamicsResult.physical_params is required for single-run readout.")
-    if result.times_fs is None:
-        raise ValueError("DynamicsResult.times_fs is required for single-run readout.")
-
-    time_fs = np.asarray(result.times_fs, dtype=float)
-    density = result.density_array()
-    polarization = polarization_C_per_m2(
-        density,
-        physical.dipole_matrix_D,
-        readout.number_density_m3,
+    polarization = compute_polarization_result(
+        result,
+        number_density_m3=readout.number_density_m3,
     )
-    metadata = {
-        "readout_field_name": readout.readout_field_name,
-        "readout_field_source": None,
-        "number_density_m3": float(readout.number_density_m3),
-        "readout_spec": readout.to_dict(),
-        **dict(readout.metadata),
-    }
-    if readout.mode == "polarization":
-        return SingleRunReadoutResult(
-            mode=readout.mode,
-            time_fs=time_fs,
-            polarization_C_per_m2=polarization,
-            metadata=metadata,
-        )
-
-    selected_field = select_readout_field(physical.field, readout.readout_field_name)
-    readout_field_values = np.asarray(selected_field(time_fs), dtype=float)
-    metadata["readout_field_source"] = _readout_field_source(readout.readout_field_name)
-    response = lab_frame_absorption_response(
-        time_fs=time_fs,
-        polarization_C_per_m2=polarization,
-        field=readout_field_values,
-        window=readout.window,
-        subtract_mean=readout.subtract_mean,
-        rel_threshold=readout.rel_threshold,
-        zero_padding_factor=readout.zero_padding_factor,
-        return_intermediates=readout.return_intermediates,
+    canonical = plan.execute(polarization, interaction_field=physical.field)
+    canonical.mode = readout.mode
+    canonical.metadata.update(
+        {
+            "legacy_mode": readout.mode,
+            "canonical_mode": plan.mode,
+            "number_density_m3": float(readout.number_density_m3),
+            "readout_field_name": readout.readout_field_name,
+            "readout_spec": readout.to_dict(),
+            "temporary_compatibility_path": True,
+        }
     )
-    return SingleRunReadoutResult(
-        mode=readout.mode,
-        time_fs=time_fs,
-        polarization_C_per_m2=polarization,
-        readout_field_MV_per_cm=readout_field_values,
-        spectrum=response,
-        metadata=metadata,
-    )
+    return canonical
 
 
 @dataclass
 class SingleRunPlan:
-    """一次 concrete field configuration 的传播计划。"""
+    """一次 concrete field configuration 的 dynamics propagation plan.
+
+    ``readout`` is retained only for ``execute_with_legacy_readout()`` while
+    existing experiment runners migrate to standalone ``ReadoutPlan`` objects.
+    """
 
     base_params: NLevelPhysicalParams
     field_plan: SingleRunFieldPlan
@@ -303,14 +234,13 @@ class SingleRunPlan:
     def make_params(self) -> NLevelPhysicalParams:
         field = self.build_field()
         base_metadata = _copy_metadata(self.base_params.input_metadata)
-        readout = ReadoutSpec() if self.readout is None else self.readout
         base_metadata.update(self.input_metadata)
         base_metadata["single_run_workflow"] = {
             "case_name": self.case_name,
             "field_plan": self.field_plan.to_dict(),
-            "readout": readout.to_dict(),
             "phase_vector": dict(self.field_plan.phase_vector),
             "centers_fs": dict(self.field_plan.centers_fs),
+            "execution_scope": "dynamics_only",
         }
         return replace(
             self.base_params,
@@ -322,6 +252,8 @@ class SingleRunPlan:
         )
 
     def execute(self) -> "SingleRunResult":
+        """Execute dynamics only; detector/readout physics is a later stage."""
+
         params = self.make_params()
         checkpoint_path = self.checkpoint.checkpoint_path
         load_ckp = None
@@ -343,36 +275,63 @@ class SingleRunPlan:
             save_ckp=save_ckp,
             force_run=self.checkpoint.force_run,
         )
-        readout_spec = ReadoutSpec() if self.readout is None else self.readout
-        readout_result = compute_single_run_readout(dynamics, readout=readout_spec)
         return SingleRunResult(
             case_name=self.case_name,
             params=params,
             dynamics_result=dynamics,
             field_metadata=params.field.to_dict(),
-            readout=readout_result,
+            readout=None,
             metadata={
-                "single_run_plan": self.to_dict(),
+                "single_run_plan": self.execution_dict(),
                 "checkpoint": self.checkpoint.to_dict(),
+                "execution_scope": "dynamics_only",
             },
         )
 
-    def to_dict(self) -> dict[str, Any]:
-        readout = ReadoutSpec() if self.readout is None else self.readout
+    def execute_with_legacy_readout(self) -> "SingleRunResult":
+        """Temporary adapter preserving the pre-M2 embedded-readout workflow."""
+
+        result = self.execute()
+        readout_spec = ReadoutSpec() if self.readout is None else self.readout
+        result.readout = compute_single_run_readout(
+            result.dynamics_result,
+            readout=readout_spec,
+        )
+        result.metadata["readout_compatibility"] = {
+            "temporary": True,
+            "adapter": "SingleRunPlan.execute_with_legacy_readout",
+            "readout_spec": readout_spec.to_dict(),
+        }
+        return result
+
+    def execution_dict(self) -> dict[str, Any]:
+        """Serialize only inputs that own or affect dynamics execution."""
+
         return {
             "class": self.__class__.__name__,
             "case_name": self.case_name,
             "field_plan": self.field_plan.to_dict(),
-            "readout": readout.to_dict(),
             "checkpoint": self.checkpoint.to_dict(),
             "input_description": self.input_description,
             "input_metadata": dict(self.input_metadata),
+            "execution_scope": "dynamics_only",
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        readout = ReadoutSpec() if self.readout is None else self.readout
+        return {
+            **self.execution_dict(),
+            "legacy_readout": readout.to_dict(),
+            "legacy_readout_status": "temporary compatibility; ignored by execute()",
         }
 
 
 @dataclass
 class SingleRunResult:
-    """一次 generic single-run execution 的结构化结果。"""
+    """一次 generic dynamics execution 的轻量结构化 wrapper。
+
+    ``readout`` remains optional only for temporary compatibility wrappers.
+    """
 
     case_name: str
     params: NLevelPhysicalParams
@@ -408,5 +367,6 @@ __all__ = [
     "SingleRunPlan",
     "SingleRunResult",
     "compute_single_run_readout",
+    "readout_plan_from_spec",
     "select_readout_field",
 ]

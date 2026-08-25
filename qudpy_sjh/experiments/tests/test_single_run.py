@@ -117,6 +117,8 @@ class SingleRunPlanTests(unittest.TestCase):
         self.assertEqual(params.input_metadata["operator"], "single_run_test")
         self.assertIn("single_run_workflow", params.input_metadata)
         self.assertEqual(params.input_metadata["single_run_workflow"]["case_name"], "case_a")
+        self.assertEqual(params.input_metadata["single_run_workflow"]["execution_scope"], "dynamics_only")
+        self.assertNotIn("readout", params.input_metadata["single_run_workflow"])
 
     def test_readout_field_selection(self):
         field_plan, _, _ = _field_plan()
