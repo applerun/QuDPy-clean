@@ -91,6 +91,10 @@ class NLevelPhysicalParams:
 	# 若为 None，则默认使用 "0", "1", ..., "N-1"。
 	basis: tuple[str, ...] | None = None
 
+	# 已在 System adapter boundary 解析的初始 density matrix。
+	# None 保留历史行为：solver 使用 level 0 ground state。
+	initial_density_matrix: tuple[tuple[complex, ...], ...] | np.ndarray | None = None
+
 	# population relaxation 通道列表。
 	# 每个通道描述一个 Lindblad relaxation channel。
 	# 同一组 from_level -> to_level 可以存在多个物理通道，
@@ -140,6 +144,7 @@ class NLevelPhysicalParams:
 			"basis": self.basis,
 			"energies_eV": self.energies_eV,
 			"dipole_matrix_D": self.dipole_matrix_D,
+			"initial_density_matrix": self.initial_density_matrix,
 			"relaxation_channels": self.relaxation_channels,
 			"pure_dephasing_channels": self.pure_dephasing_channels,
 		}
@@ -282,6 +287,7 @@ class NLevelSolverParams:
 	omega_drive: float = 1.0
 	relaxation_channels: tuple[dict[str, Any], ...] = ()
 	pure_dephasing_channels: tuple[dict[str, Any], ...] = ()
+	rho0: tuple[tuple[complex, ...], ...] | None = None
 	field: Any | None = None
 	tlist: object | None = None
 	times_fs: object | None = None

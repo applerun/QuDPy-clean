@@ -225,7 +225,6 @@ E_code(t) = E_phys(t) / reference_MV_per_cm
 run_case(
     physical_params,
     normalizer=None,
-    rho0=None,
     *,
     load_ckp=None,
     save_ckp=None,

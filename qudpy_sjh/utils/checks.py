@@ -246,6 +246,12 @@ def n2_mainline_equivalence_check(physical_params, normalizer=None) -> dict[str,
         omega_drive=0.0 if solver.omega_L is None else solver.omega_L,
         relaxation_channels=solver.relaxation_channels_code,
         pure_dephasing_channels=solver.pure_dephasing_channels_code,
+        rho0=None
+        if physical_params.initial_density_matrix is None
+        else tuple(
+            tuple(complex(value) for value in row)
+            for row in np.asarray(physical_params.initial_density_matrix, dtype=np.complex128)
+        ),
         detuning=0.0 if solver.detuning is None else solver.detuning,
         pulse_center=solver.pulse_center,
         pulse_sigma=solver.pulse_sigma,
@@ -254,11 +260,12 @@ def n2_mainline_equivalence_check(physical_params, normalizer=None) -> dict[str,
         times_fs=local_normalizer.denormalize_time_array(solver.tlist, solver),
         basis=physical_params.basis,
     )
-    explicit_times, explicit_states = _simulate_lab_for_check(
-        explicit_params,
-        initial_density_matrix(len(explicit_params.energies)),
-        None,
+    explicit_rho0 = (
+        initial_density_matrix(len(explicit_params.energies))
+        if explicit_params.rho0 is None
+        else Qobj(np.asarray(explicit_params.rho0, dtype=np.complex128))
     )
+    explicit_times, explicit_states = _simulate_lab_for_check(explicit_params, explicit_rho0, None)
     explicit = DynamicsResult(
         mode="lab_exact",
         times=explicit_times,

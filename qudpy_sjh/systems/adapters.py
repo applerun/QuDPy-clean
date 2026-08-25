@@ -32,14 +32,27 @@ def _initial_state_summary(system: NLevelSystem) -> dict[str, Any]:
     if initial is None:
         return {
             "present": False,
-            "policy": "NLevelPhysicalParams has no initial_state field; solver default rho0 is unchanged.",
+            "resolved_shape": (system.dimension, system.dimension),
+            "policy": "resolved to the historical ground-state density matrix",
         }
     array = np.asarray(initial)
     return {
         "present": True,
         "shape": tuple(array.shape),
-        "policy": "NLevelPhysicalParams has no initial_state field; value is metadata-only in this adapter.",
+        "resolved_shape": (system.dimension, system.dimension),
+        "policy": "resolved by the system adapter and propagated as rho0",
     }
+
+
+def _resolve_initial_density_matrix(system: NLevelSystem) -> tuple[tuple[complex, ...], ...]:
+    initial = system.initial_state
+    if initial is None:
+        density = np.zeros((system.dimension, system.dimension), dtype=np.complex128)
+        density[0, 0] = 1.0
+    else:
+        array = np.asarray(initial, dtype=np.complex128)
+        density = np.outer(array, array.conj()) if array.ndim == 1 else array
+    return tuple(tuple(complex(value) for value in row) for row in density)
 
 
 def _split_dissipation(system: NLevelSystem) -> tuple[tuple[RelaxationChannel, ...], tuple[PureDephasingChannel, ...], list[dict[str, Any]]]:
@@ -122,6 +135,7 @@ def _matter_kwargs_from_system(system: NLevelSystem) -> dict[str, Any]:
         "basis": tuple(system.basis),
         "energies_eV": tuple(float(item) for item in system.energies_eV),
         "dipole_matrix_D": tuple(tuple(complex(value) for value in row) for row in system.dipole_matrix_D),
+        "initial_density_matrix": _resolve_initial_density_matrix(system),
     }
 
 
@@ -144,9 +158,9 @@ def make_base_physical_params_from_system(
 ) -> NLevelPhysicalParams:
     """从 `NLevelSystem` 构造基础 `NLevelPhysicalParams`。
 
-    `field` 和 time grid 必须由调用方显式提供；transition-level
-    dephasing 暂不转换成 level pure-dephasing channels，而是记录到
-    metadata。
+    `field` 和 time grid 必须由调用方显式提供。System initial state 在此
+    解析为 density matrix；transition-level dephasing 暂不转换成 level
+    pure-dephasing channels，而是记录到 metadata。
     """
 
     _require_system(system)
@@ -158,7 +172,7 @@ def make_base_physical_params_from_system(
     metadata = _merge_metadata(
         system=system,
         user=input_metadata,
-        transition_dephasing_policy="metadata_only; no compatible transition-level field in NLevelPhysicalParams",
+        transition_dephasing_policy="metadata_only; no unique mapping to level-projector dephasing channels",
         dissipation_policy="RelaxationChannel/PureDephasingChannel objects are mapped; other objects are metadata-only",
         unmapped_dissipation=unmapped,
     )
@@ -198,7 +212,7 @@ def update_physical_params_system(
         system=system,
         existing=params.input_metadata if preserve_existing_metadata else None,
         user=input_metadata,
-        transition_dephasing_policy="metadata_only; no compatible transition-level field in NLevelPhysicalParams",
+        transition_dephasing_policy="metadata_only; no unique mapping to level-projector dephasing channels",
         dissipation_policy="system dissipation replaces existing channel fields when compatible",
         unmapped_dissipation=unmapped,
     )

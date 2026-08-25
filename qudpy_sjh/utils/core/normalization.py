@@ -237,6 +237,16 @@ class ParaNormalizer:
             raise ValueError("dipole_matrix_D 必须是 Hermitian；transition dipole 需要满足 mu_ij = conj(mu_ji)。")
         if p.basis is not None and len(p.basis) != n:
             raise ValueError("basis 长度必须与 energies_eV 一致。")
+        if p.initial_density_matrix is not None:
+            rho0 = np.asarray(p.initial_density_matrix, dtype=np.complex128)
+            if rho0.shape != (n, n):
+                raise ValueError("initial_density_matrix 必须是 N x N，并与 energies_eV 长度一致。")
+            if not np.all(np.isfinite(rho0)):
+                raise ValueError("initial_density_matrix 必须只包含有限值。")
+            if not np.allclose(rho0, rho0.conj().T, rtol=1.0e-10, atol=1.0e-12):
+                raise ValueError("initial_density_matrix 必须是 Hermitian。")
+            if not np.isclose(np.trace(rho0), 1.0, rtol=1.0e-10, atol=1.0e-12):
+                raise ValueError("initial_density_matrix 的 trace 必须为 1。")
         if p.t_end_fs <= p.t_start_fs:
             raise ValueError("t_end_fs 必须大于 t_start_fs。")
         if p.dt_fs <= 0:

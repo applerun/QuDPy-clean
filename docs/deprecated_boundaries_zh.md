@@ -197,9 +197,12 @@ piece materialization
 当前 `run_case(...)` 的边界应保持简单：
 
 ```text
-run_case(NLevelPhysicalParams, normalizer=None, rho0=None, ...)
+run_case(NLevelPhysicalParams, normalizer=None, ...)
 -> DynamicsResult
 ```
+
+初态由 System 经 adapter 解析为 `NLevelPhysicalParams.initial_density_matrix`，
+solver 不再提供独立的 `rho0` override source。
 
 不应新增或宣传：
 

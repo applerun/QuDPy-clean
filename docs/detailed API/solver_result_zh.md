@@ -23,7 +23,6 @@ from qudpy_sjh.utils.core import (
 run_case(
     physical_params,
     normalizer=None,
-    rho0=None,
     *,
     load_ckp=None,
     save_ckp=None,
@@ -54,6 +53,36 @@ NLevelPhysicalParams
 -> qutip.mesolve()
 -> DynamicsResult(mode="lab_exact")
 ```
+
+初态路径：
+
+```text
+NLevelSystem.initial_state
+-> system adapter resolves initial_density_matrix
+-> NLevelSolverParams.rho0
+-> qutip.mesolve(rho0=...)
+```
+
+未显式设置初态时仍使用历史 ground-state 默认值。`run_case` 不维护独立
+的 `rho0` override，避免与 System 初态形成两个 source of truth。
+
+当前 `NLevelSystem.initial_state` 支持：
+
+```text
+None                                  -> 默认 ground state
+shape=(N,) 的归一化 state vector       -> adapter 构造 |psi><psi|
+shape=(N, N) 的 Hermitian、trace-1 matrix -> 直接作为 density matrix
+```
+
+system makers 另外接受字符串 `"ground"`。当前不支持 basis index、任意
+basis label 或其它字符串 shorthand；非法 shape、非有限值、未归一化 vector、
+非 Hermitian matrix 和非 trace-1 matrix 都会明确报错。
+
+`NLevelSystem.transition_dephasing_fs_inv` 当前仍是 generic adapter 中的
+metadata-only 信息，不会自动转换为 `PureDephasingChannel` 或 `c_ops`。
+pairwise transition linewidth 到 level-projector rates 一般没有唯一映射；
+需要该效应的模型必须显式构造 `PureDephasingChannel`，或在 experiment/model
+construction 层声明自己的转换约定。
 
 ## full-window lab_exact
 

@@ -110,6 +110,31 @@ def _normalize_dissipation(dissipation: Any | Sequence[Any] | None) -> tuple[Any
     return (dissipation,)
 
 
+def _normalize_initial_state(value: Any, *, dimension: int) -> np.ndarray | None:
+    if value is None:
+        return None
+
+    initial = np.asarray(value, dtype=np.complex128)
+    if not np.all(np.isfinite(initial)):
+        raise ValueError("initial_state must contain only finite values.")
+    if initial.shape == (dimension,):
+        norm = float(np.vdot(initial, initial).real)
+        if not np.isclose(norm, 1.0, rtol=1.0e-10, atol=1.0e-12):
+            raise ValueError(f"initial_state vector must have unit norm. Got norm^2={norm!r}.")
+    elif initial.shape == (dimension, dimension):
+        if not np.allclose(initial, initial.conj().T, rtol=1.0e-10, atol=1.0e-12):
+            raise ValueError("initial_state density matrix must be Hermitian.")
+        trace = complex(np.trace(initial))
+        if not np.isclose(trace, 1.0, rtol=1.0e-10, atol=1.0e-12):
+            raise ValueError(f"initial_state density matrix must have trace 1. Got trace={trace!r}.")
+    else:
+        raise ValueError(
+            "initial_state must be None, a state vector with shape (dimension,), "
+            f"or a density matrix with shape (dimension, dimension). Got {initial.shape}."
+        )
+    return initial
+
+
 @dataclass(frozen=True)
 class NLevelSystem:
     """N-level matter system definition.
@@ -163,16 +188,7 @@ class NLevelSystem:
                 "Pass an explicitly symmetrized matrix to avoid hidden direction-convention mistakes."
             )
 
-        initial = None
-        if self.initial_state is not None:
-            initial = np.asarray(self.initial_state)
-            if initial.shape not in ((dimension,), (dimension, dimension)):
-                raise ValueError(
-                    "initial_state must be None, a state vector with shape (dimension,), "
-                    f"or a density matrix with shape (dimension, dimension). Got {initial.shape}."
-                )
-            if not np.all(np.isfinite(initial)):
-                raise ValueError("initial_state must contain only finite values.")
+        initial = _normalize_initial_state(self.initial_state, dimension=dimension)
 
         transition_dephasing = _normalize_transition_dephasing(
             self.transition_dephasing_fs_inv,

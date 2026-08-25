@@ -28,8 +28,10 @@ def _mesolve_options(parameters: NLevelSolverParams) -> dict[str, float]:
     return {"max_step": float(parameters.dt)}
 
 
-def _rho0(parameters: NLevelSolverParams, rho0: Qobj | None) -> Qobj:
-    return initial_density_matrix(len(parameters.energies)) if rho0 is None else rho0
+def _rho0(parameters: NLevelSolverParams) -> Qobj:
+    if parameters.rho0 is None:
+        return initial_density_matrix(len(parameters.energies))
+    return Qobj(np.asarray(parameters.rho0, dtype=np.complex128))
 
 
 def _basic_sanity_checks(result: DynamicsResult) -> dict[str, object]:
@@ -49,7 +51,6 @@ def _basic_sanity_checks(result: DynamicsResult) -> dict[str, object]:
 
 def _run_lab_case(
     parameters: NLevelSolverParams,
-    rho0: Qobj | None = None,
     *,
     physical_params: NLevelPhysicalParams | None = None,
     solver_params: SolverParams | None = None,
@@ -58,7 +59,7 @@ def _run_lab_case(
     field = parameter_field(parameters)
     solver_result = mesolve(
         H=build_lab_hamiltonian(parameters),
-        rho0=_rho0(parameters, rho0),
+        rho0=_rho0(parameters),
         tlist=times,
         c_ops=build_c_ops(parameters),
         e_ops=[],
@@ -87,7 +88,6 @@ def _run_lab_case(
 
 def _run_rwa_case(
     parameters: NLevelSolverParams,
-    rho0: Qobj | None = None,
     drive: object | None = None,
 ) -> DynamicsResult:
     ensure_rwa_enabled()
@@ -160,6 +160,11 @@ def _optical_codeparams_from_solverparams(
     if physical is not None and normalizer is not None:
         field = _bound_physical_field(physical, normalizer, solver)
 
+    rho0 = None
+    if physical is not None and physical.initial_density_matrix is not None:
+        rho0_array = np.asarray(physical.initial_density_matrix, dtype=np.complex128)
+        rho0 = tuple(tuple(complex(value) for value in row) for row in rho0_array)
+
     return NLevelSolverParams(
         t_start=solver.t_start,
         t_end=solver.t_end,
@@ -172,6 +177,7 @@ def _optical_codeparams_from_solverparams(
         omega_drive=0.0 if solver.omega_L is None else solver.omega_L,
         relaxation_channels=solver.relaxation_channels_code,
         pure_dephasing_channels=solver.pure_dephasing_channels_code,
+        rho0=rho0,
         detuning=0.0 if solver.detuning is None else solver.detuning,
         pulse_center=solver.pulse_center,
         pulse_sigma=solver.pulse_sigma,
@@ -186,7 +192,6 @@ def _optical_codeparams_from_solverparams(
 def run_case(
     physical_params: NLevelPhysicalParams,
     normalizer: ParaNormalizer | None = None,
-    rho0: Qobj | None = None,
     *,
     load_ckp: str | Path | None = None,
     save_ckp: str | Path | None = None,
@@ -210,10 +215,10 @@ def run_case(
     solver = local_normalizer.normalize(physical_params)
     parameters = _optical_codeparams_from_solverparams(solver=solver, physical=physical_params, normalizer=local_normalizer)
     if physical_params.solver_mode == "lab_exact":
-        result = _run_lab_case(parameters, rho0=rho0, physical_params=physical_params, solver_params=solver)
+        result = _run_lab_case(parameters, physical_params=physical_params, solver_params=solver)
     if physical_params.solver_mode == "rwa":
         ensure_rwa_enabled()
-        result = _run_rwa_case(parameters, rho0=rho0)
+        result = _run_rwa_case(parameters)
         result.physical_params = physical_params
         result.solver_params = solver
     if physical_params.solver_mode not in {"lab_exact", "rwa"}:

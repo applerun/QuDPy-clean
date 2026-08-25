@@ -35,6 +35,7 @@ def _base_params():
         t_end_fs=2.0,
         dt_fs=1.0,
         field=_template("base"),
+        initial_density_matrix=((0.0, 0.0), (0.0, 1.0)),
         input_description="base",
         input_metadata={"user_note": "keep_me"},
     )
@@ -87,6 +88,7 @@ class SingleRunPlanTests(unittest.TestCase):
         self.assertIs(base.field, plan.base_params.field)
         self.assertEqual(params.energies_eV, base.energies_eV)
         self.assertEqual(params.dipole_matrix_D, base.dipole_matrix_D)
+        self.assertEqual(params.initial_density_matrix, base.initial_density_matrix)
         self.assertEqual(params.t_start_fs, base.t_start_fs)
         self.assertEqual(params.t_end_fs, base.t_end_fs)
         self.assertEqual(params.dt_fs, base.dt_fs)
