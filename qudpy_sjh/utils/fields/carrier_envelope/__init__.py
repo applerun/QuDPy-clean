@@ -7,6 +7,7 @@ pump-probe delay scans.
 
 from .carrier_envelope_field import CarrierEnvelopeField
 from .carrier_spec import CarrierSpec
+from .multi_carrier_envelope_field import MultiCarrierComponent, MultiCarrierEnvelopeField
 from .envelope_spec import (
     ConstantEnvelopeSpec,
     EnvelopeSpec,
@@ -18,6 +19,7 @@ from .builders import (
     make_carrier_envelope_field,
     make_constant_carrier_envelope_field,
     make_gaussian_carrier_envelope_field,
+    make_multi_carrier_field_from_spectrum,
     make_pump_probe_field_series,
     make_sech_carrier_envelope_field,
 )
@@ -31,7 +33,10 @@ __all__ = [
     "ConstantEnvelopeSpec",
     "rebuild_envelope_spec",
     "CarrierEnvelopeField",
+    "MultiCarrierComponent",
+    "MultiCarrierEnvelopeField",
     "make_carrier_envelope_field",
+    "make_multi_carrier_field_from_spectrum",
     "make_gaussian_carrier_envelope_field",
     "make_sech_carrier_envelope_field",
     "make_constant_carrier_envelope_field",

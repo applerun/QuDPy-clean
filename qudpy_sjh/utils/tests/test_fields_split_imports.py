@@ -25,14 +25,18 @@ class FieldsSplitImportTests(unittest.TestCase):
             CarrierEnvelopeField,
             CarrierSpec,
             GaussianEnvelopeSpec,
+            MultiCarrierEnvelopeField,
             make_gaussian_carrier_envelope_field,
+            make_multi_carrier_field_from_spectrum,
             make_pump_probe_field_series,
         )
 
         self.assertIsNotNone(CarrierEnvelopeField)
         self.assertIsNotNone(CarrierSpec)
         self.assertIsNotNone(GaussianEnvelopeSpec)
+        self.assertIsNotNone(MultiCarrierEnvelopeField)
         self.assertIsNotNone(make_gaussian_carrier_envelope_field)
+        self.assertIsNotNone(make_multi_carrier_field_from_spectrum)
         self.assertIsNotNone(make_pump_probe_field_series)
 
     def test_legacy_field_api_is_not_reexported(self):
